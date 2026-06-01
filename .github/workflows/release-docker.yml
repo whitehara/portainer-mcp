@@ -45,11 +45,10 @@ jobs:
           # X.Y.Z and X.Y from the git tag. latest=false is load-bearing:
           # metadata-action's default flavor (latest=auto) would otherwise
           # publish :latest for any non-prerelease semver tag (see docs/release.md).
-          flavor: |
-            latest=false
           tags: |
             type=match,pattern=\d+\.\d+\.\d+
             type=match,pattern=(\d+\.\d+)\.\d+,group=1
+            type=raw,value=latest
 
       - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
