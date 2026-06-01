@@ -211,9 +211,17 @@ def build_server() -> FastMCP:
     transport = _resolve_transport()
     auth_provider = None
     if transport == "http":
-        token = auth.require_token(os.environ.get(auth.ENV_VAR))
-        auth_provider = auth.StaticBearerVerifier(token)
-        logger.info("HTTP auth: enabled (token %s)", auth.fingerprint(token))
+        raw_token = os.environ.get(auth.ENV_VAR)
+        if raw_token:
+            token = auth.require_token(raw_token)
+            auth_provider = auth.StaticBearerVerifier(token)
+            logger.info("HTTP auth: enabled (token %s)", auth.fingerprint(token))
+        else:
+            logger.warning(
+                "HTTP auth: disabled — set %s to require a bearer token "
+                "(safe when a trusted reverse proxy handles auth upstream)",
+                auth.ENV_VAR,
+            )
 
     base = os.environ["PORTAINER_URL"].rstrip("/") + "/api"
     verify = _env_flag("PORTAINER_TLS_VERIFY", default=True)
