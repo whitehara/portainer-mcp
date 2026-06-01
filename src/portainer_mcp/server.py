@@ -69,11 +69,24 @@ def _env_flag(name: str, *, default: bool) -> bool:
 
 _READ_ONLY_METHODS = {"GET", "HEAD"}
 
+# OpenAPI-generated names that exceed Cloudflare's 40-char tool name limit.
+_TOOL_NAME_REMAP: dict[str, str] = {
+    "Upload_a_file_under_a_specific_path_on_the_file_system_o": "UploadFileToFilesystem",
+    "GetKubernetesPersistentVolumeClaimsInNamespace": "GetK8sPVCsInNamespace",
+    "UpdateKubernetesServiceAccountImagePullSecrets": "UpdateK8sServiceAccountPullSecrets",
+    "UpdateKubernetesPersistentVolumeReclaimPolicy": "UpdateK8sPVReclaimPolicy",
+    "UpdateKubernetesIngressControllersByNamespace": "UpdateK8sIngressControllers",
+    "deleteKubernetesClusterScopedCustomResource": "deleteK8sClusterCustomResource",
+    "GetKubernetesIngressControllersByNamespace": "GetK8sIngressControllersByNS",
+}
+
 
 def _annotate_read_only(route: HTTPRoute, component: Tool) -> None:
     # readOnlyHint=False (not None) on mutating tools also activates the MCP
     # spec's destructiveHint default, so write methods need no enumeration.
     if isinstance(component, Tool):
+        if component.name in _TOOL_NAME_REMAP:
+            component.name = _TOOL_NAME_REMAP[component.name]
         component.annotations = ToolAnnotations(
             readOnlyHint=route.method.upper() in _READ_ONLY_METHODS
         )
