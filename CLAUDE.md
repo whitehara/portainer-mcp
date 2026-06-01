@@ -41,16 +41,26 @@ Key things to internalise before changing code:
 - **`server.py:build_server()` is the wiring point.** It loads the bundled
   spec, builds the httpx client (carrying `X-API-KEY`), constructs
   `RouteMap`s from the resolved profile tags, instantiates FastMCP, then
-  registers proxy tools, adds `SelectArgTransform`, and finally adds
-  `ResponseCapMiddleware`. Order matters — the transform must run before
-  the middleware so every tool exposes `select`.
+  registers proxy tools (`proxy.py`), registers swarm tools (`swarm.py`),
+  adds `SelectArgTransform`, and finally adds `ResponseCapMiddleware`.
+  Order matters — the transform must run before the middleware so every
+  tool exposes `select`.
 - **One `RouteMap` per tag.** FastMCP intersects multi-tag `RouteMap(tags=…)`
   (it's all-of, not any-of), so we emit one `RouteMap` per allowed tag and
   union the matches. Don't collapse them into a single multi-tag map.
+- **Swarm tools are hand-written in `swarm.py`.** `swarm.register()` adds
+  8 tools (`listSwarmEnvironments`, `listSwarmNodes`, `listSwarmServices`,
+  `listSwarmTasks`, `getSwarmInfo`, `getSwarmServiceLogs`,
+  `createSwarmStack`, `updateSwarmStack`) that call Docker Engine API
+  endpoints via Portainer's proxy path (`/endpoints/{id}/docker/…`).
+  Env variable values are intentionally excluded from service responses.
+  `_strip_docker_frames()` strips Docker's 8-byte log multiplexing headers
+  from container log responses (TTY-attached containers emit raw bytes and
+  are handled by a fallback).
 - **`select` is universal.** `SelectArgTransform` (`shaping.py`) wraps
-  every tool with an optional JMESPath `select` parameter, including the
-  two hand-written proxy tools (their existing `select` arg makes
-  `_has_select` skip re-wrapping them). After registration, `build_server`
+  every tool with an optional JMESPath `select` parameter, including all
+  hand-written tools (`proxy.py`, `swarm.py`); their absence of a
+  pre-declared `select` is fine — `_has_select` gates the wrapping. After registration, `build_server`
   asserts every tool exposes `select` and raises at startup if any are
   missing — keep that invariant.
 - **Response cap sits below Claude Code's MCP output cap.** Default

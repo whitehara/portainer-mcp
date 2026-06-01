@@ -28,8 +28,6 @@ jobs:
             echo "tag $tag does not match pyproject version $version" >&2
             exit 1
           fi
-      # Re-run here (release.yml also runs tests on the same tag) so a
-      # test failure blocks the image push even if PyPI publishes.
       - run: uv run pytest
 
       - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
@@ -41,7 +39,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
         with:
-          images: portainer/portainer-mcp
+          images: whitehara/portainer-mcp
           # X.Y.Z and X.Y from the git tag. latest=false is load-bearing:
           # metadata-action's default flavor (latest=auto) would otherwise
           # publish :latest for any non-prerelease semver tag (see docs/release.md).

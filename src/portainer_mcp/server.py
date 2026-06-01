@@ -52,6 +52,7 @@ from portainer_mcp import (
     redaction,
     request_context,
     shaping,
+    swarm,
 )
 
 SPEC_PATH = files("portainer_mcp") / "data" / "portainer-patched.yaml"
@@ -260,6 +261,7 @@ def build_server() -> FastMCP:
         logger.info("proxy tools skipped (PORTAINER_NO_PROXY=1)")
     else:
         proxy.register(mcp, client, read_only=read_only)
+    swarm.register(mcp, client, read_only=read_only)
     mcp.add_transform(shaping.SelectArgTransform())
 
     # Fail fast at startup rather than silently shipping tools without `select`.
