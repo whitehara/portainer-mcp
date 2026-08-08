@@ -1,5 +1,11 @@
 # Releasing
 
+> **Fork note**: everything below except "Fork release notes"
+> describes upstream's PyPI release process (`release.yml` /
+> `release-test.yml`), which this fork doesn't run — those workflow files
+> don't exist here. This fork's actual release process (GHCR image, `hl-*`
+> tags) is documented in the "Fork release notes" section.
+
 The release workflow at
 [`../.github/workflows/release.yml`](../.github/workflows/release.yml) builds
 the wheel and publishes to PyPI on every tag push matching `X.Y.Z`. Auth is
@@ -22,22 +28,31 @@ distribution name:
 No GitHub secrets, no environments, no token rotation. If you ever rename the
 distribution, register new Pending Publishers under the new name.
 
-### Docker Hub (image publish)
+### Fork release notes (whitehara/portainer-mcp)
 
-The container image at `docker.io/portainer/portainer-mcp` ships from
-[`release-docker.yml`](../.github/workflows/release-docker.yml) on the same
-`X.Y.Z` tag trigger. Docker Hub doesn't support OIDC the way PyPI does, so this
-one uses a scoped access token in repo secrets:
+This fork does **not** publish to PyPI or Docker Hub — the `release.yml` /
+`release-test.yml` workflows referenced above, and the Docker Hub section that
+used to live here, don't apply. The only release artifact is the container
+image, published to GHCR by
+[`release-docker.yml`](../.github/workflows/release-docker.yml) via
+`GITHUB_TOKEN` (no separate registry credentials needed).
 
-- **GitHub → Settings → Secrets and variables → Actions** — add:
-  - `DOCKERHUB_USERNAME` — the bot account that owns the repo.
-  - `DOCKERHUB_TOKEN` — a Docker Hub access token scoped **push-only** to
-    `portainer/portainer-mcp` (Docker Hub → Account Settings → Personal access
-    tokens). Rotate on personnel change.
+**Tag convention**: `hl-<upstream-version>-<fork-rev>` (e.g. `hl-2.44.0-1`),
+never bare `X.Y.Z` — this fork tracks `upstream/main`
+(`https://github.com/portainer/portainer-mcp`) and upstream also tags releases
+as bare `X.Y.Z`, so a fork tag in the same namespace would collide with (or
+even overwrite) an upstream tag pointing at a different commit. `<fork-rev>`
+increments per fork-only release against the same upstream version.
 
-Image tag scheme: `:X.Y.Z` and `:X.Y` per release, multi-arch
-`linux/amd64,linux/arm64`. No `:latest`. See
-[`docker.md`](docker.md).
+**`pyproject.toml`'s `version` field always mirrors the upstream version it
+was merged from — this fork never edits it independently.** Bump it only as
+part of merging a newer `upstream/main` (see the `upstream-sync` skill), never
+to cut a fork-only release; fork-only changes get a new `<fork-rev>` instead.
+
+Image tags emitted per push of `hl-<upstream-version>-<fork-rev>`:
+`:<upstream-version>-<fork-rev>` (e.g. `:2.44.0-1`, pins the exact fork
+build), `:<upstream-version>` (e.g. `:2.44.0`, floats to the latest fork
+revision for that upstream version), and `:latest`.
 
 ## Dry run on TestPyPI
 

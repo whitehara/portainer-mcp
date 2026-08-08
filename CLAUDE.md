@@ -171,6 +171,13 @@ new proxy tools, shaping changes — all patch. See
 [`docs/versioning.md`](docs/versioning.md) and [`docs/release.md`](docs/release.md)
 (release is OIDC-driven via PyPI Trusted Publishing on tag push).
 
+**This fork (whitehara/portainer-mcp) does not follow the above.** It tags
+`hl-<upstream-version>-<fork-rev>` (never bare `X.Y.Z` — that would collide
+with `upstream`'s own tags of the same name) and ships a container image via
+GHCR only, no PyPI. `pyproject.toml`'s `version` always mirrors the upstream
+version merged from and is never bumped independently. See the "Fork release
+notes" section in [`docs/release.md`](docs/release.md).
+
 ## Profiles
 
 Spec exposes ~380 operations across 40+ tags; profiles in `profiles.py`

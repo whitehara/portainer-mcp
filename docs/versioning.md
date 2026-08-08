@@ -25,3 +25,9 @@
   target.
 
 The minor only moves when the embedded spec moves.
+
+## Fork note (whitehara/portainer-mcp)
+
+The policy above is upstream's. This fork tags `hl-<upstream-version>-<fork-rev>`
+instead (e.g. `hl-2.44.0-1`) — see the "Fork release notes" section in
+[`release.md`](release.md) for why and for the `pyproject.toml` version rule.
