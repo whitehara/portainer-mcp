@@ -29,25 +29,21 @@ def _infer_access_type(url: str) -> str:
     return "remote"
 
 
-def _merge_env(
-    current: list[dict],
-    set_: dict[str, str] | None,
-    unset: list[str] | None,
-) -> tuple[list[dict], dict]:
-    """Merge an env diff onto Portainer's current Env pairs.
+def _normalize_pairs(
+    pairs: list[dict],
+) -> tuple[list[str], dict[str, str], list[str]]:
+    """Normalize a list of {name,value}/{Name,Value} pairs.
 
-    Duplicate names in `current` collapse to one entry, keeping the value
-    from the last occurrence — Portainer allows duplicate names in a
+    Returns (order, values, deduped): the first-occurrence-order name list,
+    a name→value map, and names that appeared more than once (collapsed to
+    the last-occurring value — Portainer allows duplicate names in a
     stack's Env array, and silently dropping the later one would change
-    semantics no caller asked for.
+    semantics no caller asked for).
     """
-    set_ = set_ or {}
-    unset_names = list(dict.fromkeys(unset or []))
-
     order: list[str] = []
     values: dict[str, str] = {}
     deduped: list[str] = []
-    for pair in current:
+    for pair in pairs:
         name = pair.get("name", pair.get("Name", ""))
         value = pair.get("value", pair.get("Value", ""))
         if value is None:
@@ -58,7 +54,19 @@ def _merge_env(
         else:
             order.append(name)
         values[name] = str(value)
+    return order, values, deduped
 
+
+def _merge_env(
+    current: list[dict],
+    set_: dict[str, str] | None,
+    unset: list[str] | None,
+) -> tuple[list[dict], dict]:
+    """Merge an env diff onto Portainer's current Env pairs."""
+    set_ = set_ or {}
+    unset_names = list(dict.fromkeys(unset or []))
+
+    order, values, deduped = _normalize_pairs(current)
     original_names = set(order)
 
     added: list[str] = []
@@ -89,6 +97,47 @@ def _merge_env(
         "removed": removed,
         "unchangedCount": len(original_names - set(updated) - set(removed)),
         "notFound": not_found,
+        "deduped": deduped,
+    }
+    return merged, summary
+
+
+def _replace_summary(
+    current: list[dict], replacement: list[dict]
+) -> tuple[list[dict], dict]:
+    """Compute the merged env list and diff summary for env_replace.
+
+    Unlike `_merge_env`, `current` is discarded entirely — the merged
+    result is exactly the normalized `replacement`. The summary still
+    reports added/updated/removed/unchangedCount relative to `current` so
+    both the dry_run preview and the execution path can report an honest
+    diff instead of a blind wipe-and-replace.
+    """
+    current_order, current_values, _ = _normalize_pairs(current)
+    order, new_values, deduped = _normalize_pairs(replacement)
+    new_names = set(order)
+
+    added: list[str] = []
+    updated: list[str] = []
+    unchanged = 0
+    for name in order:
+        if name in current_values:
+            if current_values[name] != new_values[name]:
+                updated.append(name)
+            else:
+                unchanged += 1
+        else:
+            added.append(name)
+
+    removed = [name for name in current_order if name not in new_names]
+
+    merged = [{"name": name, "value": new_values[name]} for name in order]
+    summary = {
+        "added": added,
+        "updated": updated,
+        "removed": removed,
+        "unchangedCount": unchanged,
+        "notFound": [],
         "deduped": deduped,
     }
     return merged, summary
@@ -522,7 +571,14 @@ def register(mcp: FastMCP, client: httpx.AsyncClient, *, read_only: bool) -> Non
             "Portainer's update endpoint silently clears the stack's "
             "AutoUpdate setting; pass allow_git_stack=True only if losing "
             "that setting (not restored automatically) is acceptable — "
-            "otherwise use StackUpdateGit / StackGitRedeploy instead."
+            "otherwise use StackUpdateGit / StackGitRedeploy instead. "
+            "Pass dry_run=True to validate and preview only: the same reads "
+            "and checks run, the merged result is computed, and the names "
+            "of variables that would change are returned — without sending "
+            "the update. Never returns values, in dry_run or otherwise. "
+            "The preview is advisory, not a handle to apply later — the "
+            "actual update re-reads the stack, so a concurrent change "
+            "between the preview and a real call can make them differ."
         ),
     )
     async def update_swarm_stack(
@@ -563,6 +619,15 @@ def register(mcp: FastMCP, client: httpx.AsyncClient, *, read_only: bool) -> Non
                 "automatically)"
             ),
         ] = False,
+        dry_run: Annotated[
+            bool,
+            Field(
+                description="Validate and preview only: perform the same "
+                "reads and checks, compute the merged result, and return "
+                "which variable names would change — without sending the "
+                "update. Never returns values."
+            ),
+        ] = False,
         pull_image: Annotated[
             bool,
             Field(description="Pull latest images before deploying (default false)"),
@@ -574,8 +639,11 @@ def register(mcp: FastMCP, client: httpx.AsyncClient, *, read_only: bool) -> Non
             ),
         ] = False,
     ) -> str:
-        if read_only:
-            raise ToolError("updateSwarmStack is not allowed in read-only mode")
+        if read_only and not dry_run:
+            raise ToolError(
+                "updateSwarmStack is not allowed in read-only mode "
+                "(dry_run=True is allowed — it only reads)"
+            )
 
         if env_replace is not None and (env_set or env_unset):
             raise ToolError(
@@ -613,18 +681,10 @@ def register(mcp: FastMCP, client: httpx.AsyncClient, *, read_only: bool) -> Non
             str(p.get("value", p.get("Value", ""))) for p in current_env
         } | set((env_set or {}).values())
 
-        removed_names: list[str] = []
         if env_replace is not None:
-            merged_env = [
-                {
-                    "name": p.get("name", p.get("Name", "")),
-                    "value": p.get("value", p.get("Value", "")),
-                }
-                for p in env_replace
-            ]
+            merged_env, summary = _replace_summary(current_env, env_replace)
         else:
             merged_env, summary = _merge_env(current_env, env_set, env_unset)
-            removed_names = summary["removed"]
 
         if not redaction.is_expose_enabled() and any(
             p.get("value") == redaction.SENTINEL for p in merged_env
@@ -639,6 +699,14 @@ def register(mcp: FastMCP, client: httpx.AsyncClient, *, read_only: bool) -> Non
                 "placeholder."
             )
 
+        def _norm(text: str) -> str:
+            return text.replace("\r\n", "\n").strip()
+
+        # compose_changed reporting is independent of compose_file resolution:
+        # None means "not compared" (either compose_file was omitted — in
+        # which case the current file is kept verbatim, not compared — or
+        # this is a real update, where the extra GET isn't worth the latency).
+        compose_changed: bool | None = None
         if compose_file is None:
             file_resp = await client.get(f"/stacks/{stack_id}/file")
             if file_resp.is_error:
@@ -652,6 +720,47 @@ def register(mcp: FastMCP, client: httpx.AsyncClient, *, read_only: bool) -> Non
                 raise ToolError(
                     f"stack {stack_id} has no current Compose file content to preserve"
                 )
+            compose_changed = False
+        elif dry_run:
+            # Best-effort comparison only — this GET is informational, not
+            # load-bearing, so any failure just leaves compose_changed unset
+            # rather than failing the whole preview.
+            try:
+                cmp_resp = await client.get(f"/stacks/{stack_id}/file")
+                current_compose = (
+                    (cmp_resp.json() or {}).get("StackFileContent")
+                    if not cmp_resp.is_error
+                    else None
+                )
+            except (httpx.HTTPError, ValueError):
+                current_compose = None
+            compose_changed = (
+                _norm(current_compose) != _norm(compose_file)
+                if current_compose
+                else None
+            )
+
+        def _build_result(*, updated: bool, env_names: list[str]) -> dict:
+            result: dict = {
+                "id": stack_id,
+                "dry_run": dry_run,
+                "updated": updated,
+                "env_names": env_names,
+                "env_added": summary["added"],
+                "env_updated": summary["updated"],
+                "env_removed": summary["removed"],
+                "env_not_found": summary["notFound"],
+                "env_unchanged_count": summary["unchangedCount"],
+            }
+            if compose_changed is not None:
+                result["compose_file_changed"] = compose_changed
+            if allow_git_stack and stack.get("GitConfig"):
+                result["auto_update_cleared"] = True
+            return result
+
+        if dry_run:
+            env_names = [p["name"] for p in merged_env]
+            return json.dumps(_build_result(updated=False, env_names=env_names))
 
         body: dict = {
             "stackFileContent": compose_file,
@@ -681,14 +790,6 @@ def register(mcp: FastMCP, client: httpx.AsyncClient, *, read_only: bool) -> Non
         else:
             env_names = [p["name"] for p in merged_env]
 
-        result: dict = {
-            "id": stack_id,
-            "updated": True,
-            "env_names": env_names,
-            "env_removed": removed_names,
-        }
-        if allow_git_stack and stack.get("GitConfig"):
-            result["auto_update_cleared"] = True
-        return json.dumps(result)
+        return json.dumps(_build_result(updated=True, env_names=env_names))
 
     logger.info("swarm tools registered (read_only=%s)", read_only)

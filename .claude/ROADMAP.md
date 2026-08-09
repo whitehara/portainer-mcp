@@ -50,7 +50,7 @@ APIが`Env`配列を全置換方式で受け取る仕様（researcherが`portain
 |---|---|---|
 | envdiff-1 | `updateSwarmStack`のread-modify-write化 | 完了（2026-08-09） |
 | envdiff-2 | `[REDACTED]`書き戻しガード＋hygieneガイド追記 | 完了（2026-08-10、reviewer PASS） |
-| envdiff-2b | `updateSwarmStack`のdry_runプレビュー機能 | 未着手（envdiff-2完了後に着手） |
+| envdiff-2b | `updateSwarmStack`のdry_runプレビュー機能 | 完了（2026-08-10、reviewer PASS） |
 | envdiff-3 | ドキュメント整合とfork delta棚卸し | 未着手 |
 | envdiff-4 | 実機検証と本番`PORTAINER_EXPOSE_ENV_VALUES`撤去 | 未着手 |
 

@@ -349,6 +349,10 @@ def _put_body(captured: list[httpx.Request], path: str = "/api/stacks/10") -> di
     raise AssertionError(f"no PUT to {path} captured")
 
 
+def _no_put(captured: list[httpx.Request]) -> None:
+    assert not any(req.method == "PUT" for req in captured)
+
+
 @pytest.mark.asyncio
 async def test_merge_env_preserves_when_omitted():
     mcp = FastMCP(name="test")
@@ -594,3 +598,242 @@ async def test_update_swarm_stack_read_only():
             "updateSwarmStack",
             {"stack_id": 10, "environment_id": 1, "compose_file": "version: '3'"},
         )
+
+
+# ---------------------------------------------------------------------------
+# updateSwarmStack — dry_run preview (envdiff-2b)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dry_run_sends_no_put():
+    mcp = FastMCP(name="test")
+    captured: list[httpx.Request] = []
+    client = _make_mock_client(_stack_routes(), captured=captured)
+    register(mcp, client, read_only=False)
+    result = await mcp.call_tool(
+        "updateSwarmStack",
+        {
+            "stack_id": 10,
+            "environment_id": 1,
+            "env_set": {"C": "new-value"},
+            "dry_run": True,
+        },
+    )
+    data = json.loads(result.content[0].text)
+    assert data["dry_run"] is True
+    assert data["updated"] is False
+    _no_put(captured)
+
+
+@pytest.mark.asyncio
+async def test_dry_run_reports_env_diff():
+    mcp = FastMCP(name="test")
+    client = _make_mock_client(_stack_routes())
+    register(mcp, client, read_only=False)
+    result = await mcp.call_tool(
+        "updateSwarmStack",
+        {
+            "stack_id": 10,
+            "environment_id": 1,
+            "env_set": {"A": "new", "C": "x"},
+            "env_unset": ["B", "ZZZ"],
+            "dry_run": True,
+        },
+    )
+    data = json.loads(result.content[0].text)
+    assert data["env_added"] == ["C"]
+    assert data["env_updated"] == ["A"]
+    assert data["env_removed"] == ["B"]
+    assert data["env_not_found"] == ["ZZZ"]
+    assert data["env_names"] == ["A", "C"]
+
+
+@pytest.mark.asyncio
+async def test_dry_run_env_replace_reports_removals():
+    mcp = FastMCP(name="test")
+    captured: list[httpx.Request] = []
+    client = _make_mock_client(_stack_routes(), captured=captured)
+    register(mcp, client, read_only=False)
+    result = await mcp.call_tool(
+        "updateSwarmStack",
+        {"stack_id": 10, "environment_id": 1, "env_replace": [], "dry_run": True},
+    )
+    data = json.loads(result.content[0].text)
+    assert data["env_removed"] == ["A", "B"]
+    assert data["env_names"] == []
+    _no_put(captured)
+
+
+@pytest.mark.asyncio
+async def test_env_replace_reports_removals():
+    # Regression test for the pre-envdiff-2b bug: env_replace never
+    # populated env_removed on the real execution path either.
+    mcp = FastMCP(name="test")
+    captured: list[httpx.Request] = []
+    client = _make_mock_client(_stack_routes(), captured=captured)
+    register(mcp, client, read_only=False)
+    result = await mcp.call_tool(
+        "updateSwarmStack",
+        {"stack_id": 10, "environment_id": 1, "env_replace": []},
+    )
+    data = json.loads(result.content[0].text)
+    assert data["env_removed"] == ["A", "B"]
+    body = _put_body(captured)
+    assert body["env"] == []
+
+
+@pytest.mark.asyncio
+async def test_dry_run_contains_no_env_values():
+    mcp = FastMCP(name="test")
+    client = _make_mock_client(_stack_routes())
+    register(mcp, client, read_only=False)
+    result = await mcp.call_tool(
+        "updateSwarmStack", {"stack_id": 10, "environment_id": 1, "dry_run": True}
+    )
+    text = result.content[0].text
+    assert "s3cr3t-alpha" not in text
+    assert "s3cr3t-bravo" not in text
+
+
+@pytest.mark.asyncio
+async def test_dry_run_rejects_git_backed_stack():
+    mcp = FastMCP(name="test")
+    client = _make_mock_client(_stack_routes())
+    register(mcp, client, read_only=False)
+    with pytest.raises(ToolError, match="[Gg]it"):
+        await mcp.call_tool(
+            "updateSwarmStack",
+            {
+                "stack_id": 12,
+                "environment_id": 1,
+                "compose_file": "version: '3'",
+                "dry_run": True,
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_dry_run_rejects_kubernetes_stack():
+    mcp = FastMCP(name="test")
+    client = _make_mock_client(_stack_routes())
+    register(mcp, client, read_only=False)
+    with pytest.raises(ToolError, match="Swarm"):
+        await mcp.call_tool(
+            "updateSwarmStack",
+            {
+                "stack_id": 13,
+                "environment_id": 1,
+                "compose_file": "version: '3'",
+                "dry_run": True,
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_dry_run_rejects_sentinel_in_env_set():
+    mcp = FastMCP(name="test")
+    captured: list[httpx.Request] = []
+    client = _make_mock_client(_stack_routes(), captured=captured)
+    register(mcp, client, read_only=False)
+    with pytest.raises(ToolError, match="REDACTED"):
+        await mcp.call_tool(
+            "updateSwarmStack",
+            {
+                "stack_id": 10,
+                "environment_id": 1,
+                "env_set": {"A": SENTINEL},
+                "dry_run": True,
+            },
+        )
+    _no_put(captured)
+
+
+@pytest.mark.asyncio
+async def test_dry_run_allowed_in_read_only():
+    mcp = FastMCP(name="test")
+    captured: list[httpx.Request] = []
+    client = _make_mock_client(_stack_routes(), captured=captured)
+    register(mcp, client, read_only=True)
+    result = await mcp.call_tool(
+        "updateSwarmStack", {"stack_id": 10, "environment_id": 1, "dry_run": True}
+    )
+    data = json.loads(result.content[0].text)
+    assert data["dry_run"] is True
+    _no_put(captured)
+
+
+@pytest.mark.asyncio
+async def test_write_blocked_in_read_only():
+    mcp = FastMCP(name="test")
+    client = _make_mock_client({})
+    register(mcp, client, read_only=True)
+    with pytest.raises(ToolError, match="read-only"):
+        await mcp.call_tool(
+            "updateSwarmStack",
+            {"stack_id": 10, "environment_id": 1, "compose_file": "version: '3'"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_dry_run_detects_compose_change():
+    mcp = FastMCP(name="test")
+    client = _make_mock_client(_stack_routes())
+    register(mcp, client, read_only=False)
+
+    changed = await mcp.call_tool(
+        "updateSwarmStack",
+        {
+            "stack_id": 10,
+            "environment_id": 1,
+            "compose_file": "version: '3'\nservices:\n  web:\n    image: nginx:1.25\n",
+            "dry_run": True,
+        },
+    )
+    assert json.loads(changed.content[0].text)["compose_file_changed"] is True
+
+    unchanged = await mcp.call_tool(
+        "updateSwarmStack",
+        {
+            "stack_id": 10,
+            "environment_id": 1,
+            "compose_file": _STACK_10_COMPOSE.replace("\n", "\r\n") + "\n",
+            "dry_run": True,
+        },
+    )
+    assert json.loads(unchanged.content[0].text)["compose_file_changed"] is False
+
+
+@pytest.mark.asyncio
+async def test_dry_run_compose_preserved_is_unchanged():
+    mcp = FastMCP(name="test")
+    captured: list[httpx.Request] = []
+    client = _make_mock_client(_stack_routes(), captured=captured)
+    register(mcp, client, read_only=False)
+    result = await mcp.call_tool(
+        "updateSwarmStack", {"stack_id": 10, "environment_id": 1, "dry_run": True}
+    )
+    data = json.loads(result.content[0].text)
+    assert data["compose_file_changed"] is False
+    _no_put(captured)
+
+
+@pytest.mark.asyncio
+async def test_update_result_includes_diff_fields():
+    mcp = FastMCP(name="test")
+    client = _make_mock_client(_stack_routes())
+    register(mcp, client, read_only=False)
+    result = await mcp.call_tool(
+        "updateSwarmStack",
+        {
+            "stack_id": 10,
+            "environment_id": 1,
+            "compose_file": _STACK_10_COMPOSE,
+        },
+    )
+    data = json.loads(result.content[0].text)
+    assert data["dry_run"] is False
+    assert "env_added" in data
+    assert "env_updated" in data
+    assert "env_unchanged_count" in data
+    assert "compose_file_changed" not in data
