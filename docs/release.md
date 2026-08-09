@@ -54,6 +54,13 @@ Image tags emitted per push of `hl-<upstream-version>-<fork-rev>`:
 build), `:<upstream-version>` (e.g. `:2.44.0`, floats to the latest fork
 revision for that upstream version), and `:latest`.
 
+**Syncing with upstream** (merging in `upstream/main`, reconciling this fork's
+patches, re-tagging) is a separate procedure from cutting a release — see the
+`upstream-sync` skill (`.claude/skills/upstream-sync/SKILL.md`) and
+`.claude/FORK-DELTA.md` for the current list of fork-specific patches that
+have to survive each sync. A weekly `upstream-drift` GitHub Actions workflow
+opens an issue when this fork falls behind.
+
 ### GitHub Release (`.mcpb` bundles)
 
 [`release-mcpb.yml`](../.github/workflows/release-mcpb.yml) builds the Claude

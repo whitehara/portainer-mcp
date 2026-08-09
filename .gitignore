@@ -8,3 +8,5 @@ docs/local
 .env
 dist/
 .DS_Store
+.claude/worktrees/
+.claude/agent-memory/

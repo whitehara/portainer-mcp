@@ -50,3 +50,10 @@ upstreamの同名タグと衝突している（別コミットを指す）。
   口頭確認・報告に留める。
 - `pyproject.toml` の `version` はフェーズ2以降 upstream の値のまま編集しない
   （フォーク独自リリースは `hl-<upstream-version>-<fork-rev>` タグで区別する）。
+
+## 継続運用（フェーズ5以降）
+
+upstream追従は**月次、または`.github/workflows/upstream-drift.yml`が起票する
+`upstream-drift`ラベルのIssueをトリガーに**実施する。手順は
+`.claude/skills/upstream-sync/SKILL.md`、フォーク独自差分の一覧は`.claude/FORK-DELTA.md`
+を参照。
