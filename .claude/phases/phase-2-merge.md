@@ -63,15 +63,19 @@
 
 ## 完了条件
 
-- [ ] `git log --oneline -1` がマージコミットを示し、`git rev-list --count HEAD..upstream/main` が `0`
-- [ ] `uv run pytest` が全件PASS（新規の `tests/test_tool_names.py` を含む）
-- [ ] `uv build` が成功し、`unzip -l dist/*.whl | grep SKILL.md` がヒットする
-- [ ] `grep -n "swarm.register" src/portainer_mcp/server.py` がヒットし、その行番号が `mcp.add_transform` の行番号より小さい
-- [ ] `_TOOL_NAME_REMAP` に `Upload_a_file_...` が存在せず、`CurrentUserEndpointNamespaceAuthorizationsInspect` が存在する
-- [ ] `Dockerfile` のHEALTHCHECKが `PORTAINER_MCP_HTTP_PORT` を参照している
-- [ ] フェーズ1文書で「明示配線が必要」とされた場合、その配線が `swarm.py` / `proxy.py` に入っている（不要とされた場合は変更なし）
+- [x] `git log --oneline -1` がマージコミットを示し、`git rev-list --count HEAD..upstream/main` が `0`
+- [x] `uv run pytest` が全件PASS（新規の `tests/test_tool_names.py` を含む） — 306件PASS
+- [x] `uv build` が成功し、`unzip -l dist/*.whl | grep SKILL.md` がヒットする
+- [x] `grep -n "swarm.register" src/portainer_mcp/server.py` がヒットし、その行番号が `mcp.add_transform` の行番号より小さい
+- [x] `_TOOL_NAME_REMAP` に `Upload_a_file_...` が存在せず、`CurrentUserEndpointNamespaceAuthorizationsInspect` が存在する
+- [x] `Dockerfile` のHEALTHCHECKが `PORTAINER_MCP_HTTP_PORT` を参照している
+- [x] フェーズ1文書で「明示配線が必要」とされた場合、その配線が `swarm.py` / `proxy.py` に入っている
+      — フェーズ1で「不要」と確定済みのため該当なし・変更なし
 - [ ] `docker build -t portainer-mcp:sync-test .` が成功する
-- [ ] reviewerサブエージェントが要対応指摘なしでPASS
+      — worktree・メインセッション双方のサンドボックスで`ghcr.io`到達不可のため未検証。
+      フェーズ3のローカル検証（実際にdocker runする）で改めて確認する
+- [x] reviewerサブエージェントが要対応指摘なしでPASS（worktree内初回PASS後、最終状態を
+      メインセッションから再レビューし再度PASS確認済み）
 
 ## リスク・注意点
 
