@@ -170,7 +170,23 @@ mcp-auth-proxy→portainer-mcpコンテナ間のHost転送挙動は今回変更�
 |---|---|---|
 | `PORTAINER_API_KEY` | HTTP起動時は**設定しない**（設定するとSystemExitで起動拒否） | stdioのローカル開発では従来どおり使用 |
 | `PORTAINER_MCP_TRUST_PROXY_TLS` | `1`。traefikのX-Forwarded-Protoを信頼するTLSポスチャ | 上記traefik対処により有効化可能になった |
-| `PORTAINER_MCP_FORWARDED_ALLOW_IPS` | overlayネットワークのCIDR（信頼するproxy送信元） | 値はフェーズ4で設定時に確認 |
+| `PORTAINER_MCP_FORWARDED_ALLOW_IPS` | overlayネットワークのCIDR（信頼するproxy送信元） | 値はフェーズ4で設定時に確認。TLSポスチャとtrust-proxy認証ポスチャの両方でこの値を共用する |
+| `PORTAINER_MCP_TRUST_PROXY_AUTH` | `1`。**フェーズ1完了後に判明した追加項目**（後述「認証ポスチャの訂正」参照）。 gate token方式ではなくtrust-proxy方式で認証ポスチャを満たす | mcp-auth-proxyが既定で`Authorization`を上流転送しないため必須。`FORWARDED_ALLOW_IPS`と同じCIDRで「inherited」方式のattestationが成立する |
 | `PORTAINER_MCP_ALLOWED_HOSTS` | DNS-rebinding対策のHostヘッダallowlist | 現行値のまま変更不要（ユーザー確認済み） |
-| （mcp-auth-proxy側）`PROXY_HEADERS` | `X-Portainer-API-Key:<共通キー>`を全リクエストに注入 | このリポジトリ外の設定。フォーク側のコードには影響しない |
+| （mcp-auth-proxy側）`PROXY_HEADERS`（`--proxy-headers`） | `X-Portainer-API-Key:<共通キー>`を全リクエストに注入 | このリポジトリ外の設定。フォーク側のコードには影響しない。`PORTAINER_MCP_TRUST_PROXY_AUTH`はgate tokenの検証を代替するだけで、per-userキー（`X-Portainer-API-Key`）の検証自体は引き続き必須なため、この注入は不要にならない |
 | `PORTAINER_MCP_DISABLE_GUIDANCE_GATE` | 設定しない（既定=有効のまま） | 共通キー運用でも実害小と判断 |
+
+### 認証ポスチャの訂正（2026-08-09、フェーズ4着手時に発見）
+
+フェーズ1の当初検討では「TLSポスチャ」（`TRUST_PROXY_TLS`）と「認証ポスチャ」（gate token方式
+`PORTAINER_MCP_AUTH_TOKEN` vs trust-proxy方式`PORTAINER_MCP_TRUST_PROXY_AUTH`）が
+upstreamでは別軸の必須設定であることを見落としていた。フェーズ4で現行本番の環境変数一覧を
+確認した際に、`PORTAINER_MCP_AUTH_TOKEN`が設定されていない（フォークの旧パッチでbearer認証
+自体を任意化していたため）ことから発覚。
+
+mcp-auth-proxyは既定で`Authorization`ヘッダを上流に転送しない（`PROXY_FORWARD_AUTHORIZATION`
+既定`false`）ため、gate token方式は機能しない。`PORTAINER_MCP_TRUST_PROXY_AUTH=1`を追加し、
+既存の`TRUST_PROXY_TLS`+`FORWARDED_ALLOW_IPS`と同じCIDRを流用する「inherited」方式の
+attestationを使うことで解決した。コード変更は不要（upstream標準機能、`server.py`パッチ
+増加なし）。フェーズ4で実際にデプロイし、本番ログで`"auth_posture": "trust_proxy"`,
+`"outcome": "ok"`を確認済み。
