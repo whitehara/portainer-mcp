@@ -5,13 +5,17 @@
 # Deliberately off the PyPI/Docker critical path (separate workflow): a
 # PyInstaller hiccup must not block the wheel publish. PyInstaller can't
 # cross-compile, so each platform builds on its own native runner.
+#
+# Fork note (whitehara/portainer-mcp): this fork doesn't ship .mcpb bundles
+# (GHCR image only, see the "Fork release notes" section in docs/release.md),
+# and its own tags are `hl-<upstream-version>-<fork-rev>`, not bare X.Y.Z, so
+# the tag-push trigger below would never fire for a fork release anyway. Kept
+# as workflow_dispatch-only (rather than deleted) to minimize upstream diff.
 
 name: Release (MCPB)
 
 on:
-  push:
-    tags:
-      - '[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
 
 permissions:
   contents: read
