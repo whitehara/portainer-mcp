@@ -125,15 +125,22 @@ Portainerの`StackUpdate` API（`PUT /stacks/{id}`）は`Env`配列を全置換�
 
 ## 完了条件
 
-- [ ] `uv run pytest tests/test_swarm.py -q` が全PASS
-- [ ] `uv run pytest -q` が全PASS（既存テストの回帰なし）
-- [ ] `uv run pytest tests/test_swarm.py --collect-only -q` に上記13テストが全て現れる
-- [ ] `uv run pytest tests/test_tool_names.py -q` がPASS
-- [ ] `grep -n 'resp.text\[' src/portainer_mcp/swarm.py` の結果のうち、
+- [x] `uv run pytest tests/test_swarm.py -q` が全PASS（33件、新規13件含む）
+- [x] `uv run pytest -q` が全PASS（318件、既存テストの回帰なし）
+- [x] `uv run pytest tests/test_swarm.py --collect-only -q` に上記13テストが全て現れる
+- [x] `uv run pytest tests/test_tool_names.py -q` がPASS
+- [x] `grep -n 'resp.text\[' src/portainer_mcp/swarm.py` の結果のうち、
       `update_swarm_stack`内のものが全て`_scrub(...)`経由になっている
-- [ ] `git diff --stat upstream/main..HEAD` で新規に変更されたファイルが`swarm.py`と
-      `tests/test_swarm.py`のみ（`server.py` / `redaction.py` / `shaping.py` /
-      `proxy.py`に差分が増えていない）
+- [x] `git diff --stat upstream/main..HEAD` で新規に変更されたファイルが`swarm.py`と
+      `tests/test_swarm.py`のみ
+
+## 実施結果（2026-08-09）
+
+worktree fork委譲で実装。reviewer PASS（Blocker/Should 0件）。任意指摘2件
+（`removed`リストの非決定的な順序、`allow_git_stack=True`時に実際はgit連携で
+なくても`auto_update_cleared`を返してしまう点）も追加で修正済み
+（`allow_git_stack and stack.get("GitConfig")`の両方を満たす場合のみ返す形に修正）。
+`ruff check`もPASS。mainへfast-forwardマージ・push済み。
 
 ## リスク・注意点
 
