@@ -30,16 +30,47 @@ upstreamの同名タグと衝突している（別コミットを指す）。
 
 詳細は `.claude/phases/phase-0-tag-cleanup.md` 以下、各フェーズごとのファイルを参照。
 
-## 今後の検討事項（このプランの範囲外・バックログ）
+## プロジェクト2: スタックenv差分更新ツール（envdiff、2026-08-09開始）
 
-- **スタックenvの差分更新ツール**（2026-08-09提案）: `PORTAINER_EXPOSE_ENV_VALUES=1`を
-  本番で有効にしているのは、Portainerの`StackUpdate` APIが`Env`配列を全置換方式で
-  受け取る仕様のため、他スタックを差分更新する際に既存env値をLLM側が読めないと
-  安全に更新できないことが理由（フェーズ4完了後に判明）。portainer-mcp側に
-  「サーバ内部で現在の全Env値を取得（LLMには見せない）→渡された差分をマージ→
-  全体を送信」という新しいハンドライトツールを追加すれば、`PORTAINER_EXPOSE_ENV_VALUES`を
-  有効にせずに済む可能性がある。upstream追従計画（本ファイル）の範囲外の新機能提案として、
-  この一連の作業完了後に別途plannerで検討する。
+upstream追従計画（フェーズ0〜6）完了後に着手した別プロジェクト。
+
+### 背景
+
+`PORTAINER_EXPOSE_ENV_VALUES=1`を本番で有効にしているのは、Portainerの`StackUpdate`
+APIが`Env`配列を全置換方式で受け取る仕様（researcherが`portainer/portainer`ソースコードで
+確認済み。省略時は既存値を全消去、Kubernetesスタックのみ`Env`フィールド自体が無く対象外）
+のため、他スタックを差分更新する際に既存env値をLLM側が読めないと安全に更新できないことが
+理由（フェーズ4完了後に判明）。planner→planner-cross-review（2回反復、機械的パッチ適用で
+収束）を経て、`updateSwarmStack`をサーバ内部でread-modify-writeする形に拡張する計画を
+策定・承認済み。
+
+### フェーズ一覧
+
+| フェーズ | 内容 | 状態 |
+|---|---|---|
+| envdiff-1 | `updateSwarmStack`のread-modify-write化 | 未着手 |
+| envdiff-2 | `[REDACTED]`書き戻しガード＋hygieneガイド追記 | 未着手 |
+| envdiff-3 | ドキュメント整合とfork delta棚卸し | 未着手 |
+| envdiff-4 | 実機検証と本番`PORTAINER_EXPOSE_ENV_VALUES`撤去 | 未着手 |
+
+詳細は`.claude/phases/envdiff-phase-1-read-modify-write.md`以下、各フェーズごとの
+ファイルを参照。
+
+### この計画に固有の決定事項
+
+- env省略時の既定動作: **保持**（現状の全消去は実質的にバグと判断、破壊的変更として
+  ユーザー承認済み）
+- 既存`env`パラメータは`env_replace`に改名（互換維持しない）
+- 単一ツール（`updateSwarmStack`拡張）に集約。新規ツールは追加しない
+- git連携スタックは既定拒否、`allow_git_stack=True`の明示オプトインのみ許可
+  （`AutoUpdate`消失は自動復元しない）
+- Kubernetesスタック（Type=3）は未検証のため拒否
+- フェーズ2の`[REDACTED]`書き戻しガードは`proxy.py`（upstream由来ファイル）に入るため、
+  実装後にupstreamへのPR提出を検討する
+- フェーズ2で`skills/portainer-mcp-hygiene/SKILL.md`（upstream由来、`get_guidance`で
+  配信される運用ガイド）にも横断的な注意事項（`[REDACTED]`を書き戻さない）を追記する。
+  これもupstreamにとって有益な一般原則のため、将来的にupstream PRを検討する
+- フェーズ3→4はユーザー承認必須（本番影響）
 
 ## 運用ルール（このプランに固有）
 
