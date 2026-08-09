@@ -10,6 +10,7 @@ import pytest
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
+from portainer_mcp.redaction import SENTINEL
 from portainer_mcp.swarm import (
     _infer_access_type,
     _merge_env,
@@ -17,7 +18,6 @@ from portainer_mcp.swarm import (
     _strip_docker_frames,
     register,
 )
-
 
 # ---------------------------------------------------------------------------
 # _infer_access_type
@@ -544,6 +544,44 @@ def test_error_body_scrub_across_500_char_boundary():
     # replacement — assert no such orphaned prefix leaks through.
     for cut in range(4, len(secret)):
         assert secret[:cut] not in scrubbed
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_sentinel_in_env_set():
+    mcp = FastMCP(name="test")
+    client = _make_mock_client(_stack_routes())
+    register(mcp, client, read_only=False)
+    with pytest.raises(ToolError, match="REDACTED"):
+        await mcp.call_tool(
+            "updateSwarmStack",
+            {
+                "stack_id": 10,
+                "environment_id": 1,
+                "env_set": {"A": SENTINEL},
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_allows_sentinel_when_expose_enabled(monkeypatch):
+    monkeypatch.setenv("PORTAINER_EXPOSE_ENV_VALUES", "1")
+    mcp = FastMCP(name="test")
+    captured: list[httpx.Request] = []
+    client = _make_mock_client(_stack_routes(), captured=captured)
+    register(mcp, client, read_only=False)
+    result = await mcp.call_tool(
+        "updateSwarmStack",
+        {
+            "stack_id": 10,
+            "environment_id": 1,
+            "env_set": {"A": SENTINEL},
+        },
+    )
+    data = json.loads(result.content[0].text)
+    assert data["updated"] is True
+    body = _put_body(captured)
+    by_name = {p["name"]: p["value"] for p in body["env"]}
+    assert by_name["A"] == SENTINEL
 
 
 @pytest.mark.asyncio

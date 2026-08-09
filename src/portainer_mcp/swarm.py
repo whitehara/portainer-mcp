@@ -14,6 +14,8 @@ from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from portainer_mcp import redaction
+
 logger = logging.getLogger("portainer_mcp")
 
 _STACK_TYPE_SWARM = 1
@@ -623,6 +625,19 @@ def register(mcp: FastMCP, client: httpx.AsyncClient, *, read_only: bool) -> Non
         else:
             merged_env, summary = _merge_env(current_env, env_set, env_unset)
             removed_names = summary["removed"]
+
+        if not redaction.is_expose_enabled() and any(
+            p.get("value") == redaction.SENTINEL for p in merged_env
+        ):
+            raise ToolError(
+                "the merged environment variables include the redaction "
+                f"sentinel {redaction.SENTINEL!r} as a value — this looks "
+                "like a value read from a previous (redacted) tool response "
+                "being written back verbatim, which would overwrite the "
+                "actual secret with the placeholder. Pass the real value "
+                "you want in env_set/env_replace, not the redacted "
+                "placeholder."
+            )
 
         if compose_file is None:
             file_resp = await client.get(f"/stacks/{stack_id}/file")

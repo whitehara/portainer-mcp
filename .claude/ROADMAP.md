@@ -49,12 +49,19 @@ APIが`Env`配列を全置換方式で受け取る仕様（researcherが`portain
 | フェーズ | 内容 | 状態 |
 |---|---|---|
 | envdiff-1 | `updateSwarmStack`のread-modify-write化 | 完了（2026-08-09） |
-| envdiff-2 | `[REDACTED]`書き戻しガード＋hygieneガイド追記 | 未着手 |
+| envdiff-2 | `[REDACTED]`書き戻しガード＋hygieneガイド追記 | 完了（2026-08-10、reviewer PASS） |
+| envdiff-2b | `updateSwarmStack`のdry_runプレビュー機能 | 未着手（envdiff-2完了後に着手） |
 | envdiff-3 | ドキュメント整合とfork delta棚卸し | 未着手 |
 | envdiff-4 | 実機検証と本番`PORTAINER_EXPOSE_ENV_VALUES`撤去 | 未着手 |
 
 詳細は`.claude/phases/envdiff-phase-1-read-modify-write.md`以下、各フェーズごとの
 ファイルを参照。
+
+envdiff-2bは「ドライラン／what-ifモードを追加できないか」というユーザー要望を受け、
+planner→planner-cross-review（3回反復、内容面の異論は出尽くし表現面の指摘のみで
+上限到達、ユーザーが最終プランのまま承認）を経て追加したフェーズ。envdiff-2の
+sentinelガードより後・PUT送信より前に`dry_run=True`の早期returnを置く必要があるため、
+envdiff-2完了後に着手する順序依存がある。
 
 ### この計画に固有の決定事項
 

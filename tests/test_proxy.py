@@ -279,3 +279,53 @@ async def test_call_returns_body_on_success():
         body=None,
     )
     assert json.loads(out) == {"ok": True}
+
+
+# --- _call sentinel write-back guard -----------------------------------------
+
+
+async def test_write_with_redaction_sentinel_rejected():
+    client = _client_returning(200, {"ok": True})
+    with pytest.raises(ToolError, match="REDACTED"):
+        await _call(
+            client,
+            kind="docker",
+            environment_id=1,
+            method="PUT",
+            path="/containers/x/update",
+            query_params=None,
+            headers=None,
+            body=json.dumps({"Env": [f"FOO={SENTINEL}"]}),
+        )
+
+
+async def test_write_with_sentinel_allowed_when_expose_enabled(monkeypatch):
+    monkeypatch.setenv(EXPOSE_ENV_VAR, "1")
+    client = _client_returning(200, {"ok": True})
+    out = await _call(
+        client,
+        kind="docker",
+        environment_id=1,
+        method="PUT",
+        path="/containers/x/update",
+        query_params=None,
+        headers=None,
+        body=json.dumps({"Env": [f"FOO={SENTINEL}"]}),
+    )
+    assert json.loads(out) == {"ok": True}
+
+
+async def test_get_with_sentinel_body_not_blocked():
+    # GET is read-only by HTTP semantics; the guard only fires on write verbs.
+    client = _client_returning(200, {"ok": True})
+    out = await _call(
+        client,
+        kind="docker",
+        environment_id=1,
+        method="GET",
+        path="/info",
+        query_params=None,
+        headers=None,
+        body=json.dumps({"Env": [f"FOO={SENTINEL}"]}),
+    )
+    assert json.loads(out) == {"ok": True}

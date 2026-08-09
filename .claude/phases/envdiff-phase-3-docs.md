@@ -15,6 +15,9 @@
    ツール出力に出さない）である旨と、その理由（`PUT /stacks/{id}`のEnv全置換
    セマンティクス）を追記する。「Env variable values are intentionally
    excluded from service responses」の一文と並べる。
+   併せて、`dry_run`パラメータの存在（PUTを送らず変更内訳のみ返すプレビュー
+   モード）と、read-onlyモードでも`dry_run=True`だけは許可されること
+   （envdiff-2bで追加した意味論変更）を同じ段落に追記する。
 
 2. `.claude/FORK-DELTA.md`の差分表を更新する:
    - `swarm.py`行の「変更内容」にenv差分マージを追記

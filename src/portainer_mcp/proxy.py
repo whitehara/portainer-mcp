@@ -112,6 +112,21 @@ async def _call(
 ) -> str:
     _validate_path(path)
     _validate_headers(headers)
+    if (
+        method.upper() not in {"GET", "HEAD"}
+        and body
+        and redaction.SENTINEL in body
+        and not redaction.is_expose_enabled()
+    ):
+        raise ToolError(
+            "request body contains the redaction sentinel "
+            f"{redaction.SENTINEL!r} — this looks like a value read from a "
+            "previous (redacted) tool response being written back as if it "
+            "were real, which would overwrite the actual secret with the "
+            "placeholder. If you're editing a Swarm stack's environment "
+            "variables, use updateSwarmStack on the owning stack instead of "
+            "writing the service spec directly."
+        )
     url = f"/endpoints/{environment_id}/{kind}{path}"
     response = await client.request(
         method.upper(),

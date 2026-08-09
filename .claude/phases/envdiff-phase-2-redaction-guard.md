@@ -46,11 +46,11 @@ redaction既定に戻した状態で、LLMが読み取った`[REDACTED]`を実�
 
 ## 完了条件
 
-- [ ] `uv run pytest tests/test_proxy.py tests/test_swarm.py -q` が全PASS
-- [ ] `uv run pytest -q` が全PASS
-- [ ] `git diff upstream/main..HEAD -- src/portainer_mcp/proxy.py | grep -c '^+'`
+- [x] `uv run pytest tests/test_proxy.py tests/test_swarm.py -q` が全PASS
+- [x] `uv run pytest -q` が全PASS
+- [x] `git diff upstream/main..HEAD -- src/portainer_mcp/proxy.py | grep -c '^+'`
       が15行以下（fork deltaを小さく保つ確認）
-- [ ] `skills/portainer-mcp-hygiene/SKILL.md`の「Env values are redacted by
+- [x] `skills/portainer-mcp-hygiene/SKILL.md`の「Env values are redacted by
       default」節に上記の追記がある
 
 ## リスク・注意点
@@ -67,3 +67,33 @@ redaction既定に戻した状態で、LLMが読み取った`[REDACTED]`を実�
   通らない。回避方法（`PORTAINER_EXPOSE_ENV_VALUES=1`）を**エラーメッセージ
   には書かない**（回避方法をLLMに教えると自分でオフにしようとする恐れが
   ある）。ユーザー向けの逃げ道はdocs側にだけ書く
+
+## 実施結果（2026-08-10）
+
+メインセッションで実装。reviewerサブエージェント1周目で「要修正」判定:
+- Blocker: 本ファイルとROADMAP.mdへの完了記録が未実施 → 本追記で対応
+- Should: `swarm.py`側のガードが`redaction.is_expose_enabled()`を考慮せず
+  常時発火しており、`PORTAINER_EXPOSE_ENV_VALUES=1`時にproxy.py側のガードと
+  非対称な挙動になっていた → `swarm.py`のガード条件に
+  `not redaction.is_expose_enabled() and`を追加し、対応する回帰テスト
+  `test_update_allows_sentinel_when_expose_enabled`を追加して修正
+
+修正後の状態:
+- `uv run pytest tests/test_proxy.py tests/test_swarm.py -q`: 76件全PASS
+- `uv run pytest -q`: 323件全PASS（既存テストの回帰なし）
+- `uvx ruff check`: 変更ファイルに新規指摘なし（`proxy.py:94`のTRY004、
+  `swarm.py:177`のS110/BLE001は`git stash`比較で確認済みのpre-existing
+  issueであり、本フェーズの変更対象外）
+- `git diff upstream/main -- src/portainer_mcp/proxy.py`の追加行数は15行
+  （完了条件「15行以下」を満たす）
+- セキュリティチェック（reviewer実施）: diff中の"secret"文字列ヒットは
+  コメント/エラーメッセージ/変数名としての単語のみで実値なし。プライベート
+  IP・`.env`関連の混入なし
+
+1周目のNice指摘（任意）: 「proxy.py/swarm.pyの2箇所のガード実装は対象データの
+粒度が異なる（proxy.pyは任意ボディ文字列走査、swarm.pyはマージ後env値のみ）ため
+共通化は不要」との判断があり、対応しない（reviewerの判断どおり）。
+
+reviewer 2周目（2026-08-10）: PASS（Blocker/Should 0件）。セキュリティチェック
+（機密パターン・プライベートIP・`.env`混入）も0件。コミット前の機密目視確認・
+push可否はユーザー承認待ち。
