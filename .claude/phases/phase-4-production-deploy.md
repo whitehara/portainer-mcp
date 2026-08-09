@@ -82,17 +82,26 @@ GHCRに新イメージがpublishされ、本番Swarmサービスが新イメー�
   `PORTAINER_MCP_HTTP_HOST`, `PORTAINER_MCP_HTTP_PORT`, `PORTAINER_MCP_TRANSPORT`,
   `PORTAINER_PROFILES`, `PORTAINER_URL`
 - 副次的発見: 旧本番では`PORTAINER_EXPOSE_ENV_VALUES=1`が設定されており、`docker_proxy`経由の
-  Spec直接取得でenv値が伏字化されずに見える状態だった。新デプロイではユーザーの判断で削除した。
+  Spec直接取得でenv値が伏字化されずに見える状態だった。新デプロイでは一度削除したが、
+  下記「再追加」のとおり運用上必要と判明し戻した。
 
 ### 新環境変数（フェーズ1決定＋認証ポスチャ訂正を反映）
 
-`PORTAINER_API_KEY`・`PORTAINER_EXPOSE_ENV_VALUES`を削除し、
-`PORTAINER_MCP_TRUST_PROXY_TLS`・`PORTAINER_MCP_FORWARDED_ALLOW_IPS`・
+`PORTAINER_API_KEY`を削除し、`PORTAINER_MCP_TRUST_PROXY_TLS`・`PORTAINER_MCP_FORWARDED_ALLOW_IPS`・
 `PORTAINER_MCP_TRUST_PROXY_AUTH`を追加（詳細は`.claude/phases/phase-1-auth-decision.md`
 「認証ポスチャの訂正」節）。あわせてmcp-auth-proxy側（`portainer-mcp-http`サービス）の
 起動コマンドに`--proxy-headers=X-Portainer-API-Key:<共通キー>`を追加し、claude.aiのような
 ヘッダ指定不可のクライアント経路でも per-userキー検証が通るようにした（既存の
 `${PORTAINER_TOKEN}`変数を転用、新規の秘密情報追加なし）。
+
+### `PORTAINER_EXPOSE_ENV_VALUES`の再追加（デプロイ直後に発覚）
+
+初回デプロイでは`PORTAINER_EXPOSE_ENV_VALUES`を削除したが、これが無いと**他のスタックを
+portainer-mcp経由でデプロイ・更新する際にenv値が取得できず失敗する**ことが判明した
+（`StackFileInspect`等で既存スタックのenv値を読み取れないと、更新時に値を保持できず
+壊れる）。ユーザーの判断で`PORTAINER_EXPOSE_ENV_VALUES=1`を`/tmp/portainer-agent-stack.yml`
+に戻し、再デプロイ予定。この設定は本フォークの通常運用上の要件であり、フェーズ1で
+セキュリティ上の懸念として指摘した点よりも運用上の必要性が優先される。
 
 ### 動作確認結果
 
