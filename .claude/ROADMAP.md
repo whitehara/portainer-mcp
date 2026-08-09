@@ -25,7 +25,7 @@ upstreamの同名タグと衝突している（別コミットを指す）。
 | 2 | upstream/mainのマージとフォークパッチ再適用 | 完了（2026-08-09、docker build検証はフェーズ3へ持ち越し） |
 | 3 | ローカル検証 | 完了（2026-08-09、Docker build/run実機確認のみフェーズ4へ持ち越し） |
 | 4 | 本番デプロイと切り戻し準備 | 完了（2026-08-09、手動デプロイ、詳細はphase-4参照） |
-| 5 | 継続追従運用の仕組み化 | 未着手 |
+| 5 | 継続追従運用の仕組み化 | 完了（2026-08-09、CI自動化(drift Issue)は撤回しオンデマンド運用に変更） |
 | 6 | 案Aへの移行（フェーズ1で案Cを選んだ場合のみ） | 対象外（案A採用のため不要） |
 
 詳細は `.claude/phases/phase-0-tag-cleanup.md` 以下、各フェーズごとのファイルを参照。
@@ -53,7 +53,14 @@ upstreamの同名タグと衝突している（別コミットを指す）。
 
 ## 継続運用（フェーズ5以降）
 
-upstream追従は**月次、または`.github/workflows/upstream-drift.yml`が起票する
-`upstream-drift`ラベルのIssueをトリガーに**実施する。手順は
-`.claude/skills/upstream-sync/SKILL.md`、フォーク独自差分の一覧は`.claude/FORK-DELTA.md`
-を参照。
+このレポは公開レポであり、私有レポのようなIssueベースの課題管理は行わない方針のため、
+upstream追従の検知はCI駆動の自動化（GitHub Actions + Issue起票）ではなく、
+**ユーザーが依頼したタイミングで`upstream-sync`スキルを使った半自動対応**とする
+（2026-08-09、CI自動化案からこの方針に変更。理由: このリポジトリはGitHub Issues機能
+自体を無効化しており、Issue駆動の通知は成立しない。加えて公開レポでの運用方針として
+そもそもIssueを使わない）。
+
+ユーザーが「upstream追従して」「upstreamとの差分を確認して」等と依頼した際に
+`.claude/skills/upstream-sync/SKILL.md`の手順（`git fetch upstream`→差分確認→
+`git merge-tree`での事前コンフリクト予測→…）に従って対応する。フォーク独自差分の
+一覧は`.claude/FORK-DELTA.md`を参照。

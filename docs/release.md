@@ -58,8 +58,10 @@ revision for that upstream version), and `:latest`.
 patches, re-tagging) is a separate procedure from cutting a release — see the
 `upstream-sync` skill (`.claude/skills/upstream-sync/SKILL.md`) and
 `.claude/FORK-DELTA.md` for the current list of fork-specific patches that
-have to survive each sync. A weekly `upstream-drift` GitHub Actions workflow
-opens an issue when this fork falls behind.
+have to survive each sync. This fork doesn't run CI-driven drift detection
+(this repo is public and doesn't use GitHub Issues for tracking) — syncing
+is on-demand, triggered by asking for it, following the `upstream-sync`
+skill's procedure.
 
 ### GitHub Release (`.mcpb` bundles)
 

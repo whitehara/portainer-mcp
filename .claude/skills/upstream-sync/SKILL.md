@@ -1,6 +1,6 @@
 ---
 name: upstream-sync
-description: How to sync this fork (whitehara/portainer-mcp) with its upstream (portainer/portainer-mcp) — checking drift, predicting merge conflicts before touching the working tree, reconciling the fork's hand-written patches against upstream's `server.py`, and re-tagging for a fork release. Trigger this skill whenever the user mentions syncing with upstream, merging upstream changes, resolving an `upstream-drift` GitHub issue, checking how far behind upstream this fork is, or any phrasing like "let's catch up with upstream" — also consult it before touching `server.py`, `.github/workflows/release-*.yml`, or `docs/release.md`/`docs/versioning.md` if the change is upstream-drift-related rather than a fork-local fix.
+description: How to sync this fork (whitehara/portainer-mcp) with its upstream (portainer/portainer-mcp) — checking drift, predicting merge conflicts before touching the working tree, reconciling the fork's hand-written patches against upstream's `server.py`, and re-tagging for a fork release. This is a user-triggered, on-demand procedure (this repo is public and doesn't run CI-driven drift detection or use GitHub Issues for tracking). Trigger this skill whenever the user asks to sync with upstream, merge upstream changes, or check how far behind upstream this fork is, or any phrasing like "let's catch up with upstream" — also consult it before touching `server.py`, `.github/workflows/release-*.yml`, or `docs/release.md`/`docs/versioning.md` if the change is upstream-sync-related rather than a fork-local fix.
 ---
 
 # upstream-sync
@@ -11,10 +11,10 @@ branched from at `1351ada`) via the `upstream` git remote
 enumerated in [`../../FORK-DELTA.md`](../../FORK-DELTA.md) — read that file before starting
 a sync so you know exactly what has to survive the merge.
 
-A weekly [`upstream-drift.yml`](../../../.github/workflows/upstream-drift.yml) workflow
-opens/updates a GitHub issue labeled `upstream-drift` when `upstream/main` pulls ahead. That
-issue is the usual trigger for running this skill; `git rev-list --count HEAD..upstream/main`
-by hand works too.
+There's no CI-driven drift detection — this repo is public and doesn't use GitHub Issues
+for tracking, so syncing is on-demand: the user asks for it (directly, or by asking to check
+how far behind upstream this fork is), and this skill's procedure runs from there. To check
+drift by hand at any time: `git fetch upstream && git rev-list --count HEAD..upstream/main`.
 
 ## 1. Check drift and predict conflicts before touching anything
 
@@ -162,6 +162,5 @@ other production config change (record the rollback point first).
 ## 9. Close the loop
 
 Update `FORK-DELTA.md`'s "最終確認日" column for entries touched during the sync, and update
-`.claude/ROADMAP.md` / phase docs with the sync's outcome. If an `upstream-drift` issue
-triggered this sync, it closes automatically the next time the drift workflow runs and finds
-zero commits behind — no manual close needed unless you want to close it immediately.
+`.claude/ROADMAP.md` / phase docs with the sync's outcome and the date, so the next on-demand
+sync starts from an accurate picture of what's already been reconciled.

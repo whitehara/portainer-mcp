@@ -45,16 +45,41 @@ upstreamの新コミットが自動で通知され、次回の同期が手順書
 
 ## 完了条件
 
-- [ ] `.claude/FORK-DELTA.md` が存在し、`git diff --stat upstream/main..HEAD` で出るファイルが
+- [x] `.claude/FORK-DELTA.md` が存在し、`git diff --stat upstream/main..HEAD` で出るファイルが
       すべて表に載っている
-- [ ] `gh workflow run upstream-drift.yml` を手動実行して成功し、差分0の状態ではIssueが
-      作られないことを確認できる
-- [ ] `.claude/skills/upstream-sync/SKILL.md` が存在し、`git merge-tree --write-tree` による
+- [x] ~~`gh workflow run upstream-drift.yml` を手動実行して成功し、差分0の状態ではIssueが
+      作られないことを確認できる~~ — **タスク2自体を撤回**（下記「実施結果」参照）。
+      代わりに、オンデマンド運用（ユーザー依頼時に`upstream-sync`スキルで対応）へ変更した
+- [x] `.claude/skills/upstream-sync/SKILL.md` が存在し、`git merge-tree --write-tree` による
       事前コンフリクト予測手順とoperationId差分確認手順が含まれている
-- [ ] `.claude/ROADMAP.md` に追従サイクルの記載がある
+- [x] `.claude/ROADMAP.md` に追従サイクルの記載がある（オンデマンド運用として記載）
+
+## 実施結果（2026-08-09）
+
+タスク1・3・4・5は計画どおり実施。**タスク2（`.github/workflows/upstream-drift.yml`によるCI
+駆動のdrift検知・Issue自動化）は実装後に撤回した**。
+
+- 実装 → `gh workflow run`で実機検証 → `gh api repos/whitehara/portainer-mcp --jq '.has_issues'`
+  が`false`、すなわち**このリポジトリはGitHub Issues機能自体を無効化している**ことが判明。
+  Issue駆動の通知は原理的に成立しない。
+- 加えてユーザーから「公開レポであるため、私有レポのようにIssueを課題管理としない。
+  upstream追随はユーザーからの依頼で行い、スキルで半自動対応とする」という運用方針が
+  示された。
+- そのため`.github/workflows/upstream-drift.yml`を削除し、GitHub上に作成済みだった
+  `upstream-drift`ラベルも削除。`.claude/ROADMAP.md`・`docs/release.md`・
+  `.claude/skills/upstream-sync/SKILL.md`から関連記述を除去し、「ユーザーが依頼した
+  タイミングで`upstream-sync`スキルを使う」オンデマンド運用に統一した。
+- `.claude/FORK-DELTA.md`はこのワークフローに一度も言及していなかったため、削除に伴う
+  修正は不要だった。
+
+結果として、フェーズ5のゴール（「upstreamの新コミットが自動で通知され」）のうち
+「自動通知」の部分は当初計画から撤回されたが、「次回の同期が手順書どおりに実行でき、
+フォーク独自差分の棚卸しが毎回ゼロから調査しなくて済む」という残りの目的（スキル化・
+FORK-DELTA.md整備）は達成している。
 
 ## リスク・注意点
 
 - CLAUDE.mdの「Project / Issueの書き込みはメインセッションのみ」ルールはサブエージェントに対する
-  制約であり、CIワークフローには適用されない。ただし本レポはProject運用ではないので、drift Issue
-  はProjectに紐付けず素のIssueとして扱う。
+  制約であり、CIワークフローには適用されない。ただし本レポはProject運用ではなく、かつ
+  GitHub Issues機能自体を使わない方針のため、drift検知自体をIssueに紐付けない（上記の通り
+  この仕組み自体を撤回した）。
