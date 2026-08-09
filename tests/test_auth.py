@@ -11,9 +11,12 @@ from __future__ import annotations
 import json
 import logging
 
+import httpx
 import pytest
+from fastmcp.server.http import set_http_request
+from starlette.requests import Request
 
-from portainer_mcp import auth
+from portainer_mcp import auth, auth_posture, passthrough
 
 
 # --- require_token -----------------------------------------------------------
@@ -185,7 +188,326 @@ async def test_verifier_audit_never_logs_token_bytes(caplog):
     with caplog.at_level(logging.INFO, logger="portainer_mcp.audit"):
         await verifier.verify_token(expected)
         await verifier.verify_token(attempted)
-    allowed_keys = {"event", "outcome", "client_ip", "user_agent", "session_id"}
+    allowed_keys = {
+        "event",
+        "outcome",
+        "client_ip",
+        "user_agent",
+        "session_id",
+        "insecure_transport",
+    }
+    for record in caplog.records:
+        payload = json.loads(record.message)
+        assert set(payload).issubset(allowed_keys), (
+            f"unexpected keys in audit payload: {set(payload) - allowed_keys}"
+        )
+
+
+# --- PassthroughVerifier -----------------------------------------------------
+
+GATE = "g" * 64
+ALICE = {"Id": 7, "Username": "alice", "Role": 1}
+
+
+def _request(
+    headers: dict[str, str] | None = None,
+    scheme: str = "http",
+    client_host: str = "203.0.113.7",
+) -> Request:
+    raw = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": scheme,
+            "path": "/mcp",
+            "raw_path": b"/mcp",
+            "query_string": b"",
+            "client": (client_host, 51234),
+            "headers": raw,
+        }
+    )
+
+
+def _mock_client(handler=None) -> httpx.AsyncClient:
+    if handler is None:
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=ALICE)
+
+    return httpx.AsyncClient(
+        base_url="http://portainer/api", transport=httpx.MockTransport(handler)
+    )
+
+
+def _verifier(handler=None) -> auth.PassthroughVerifier:
+    return auth.PassthroughVerifier(
+        GATE, _mock_client(handler), passthrough.ValidationCache(ttl=60)
+    )
+
+
+async def test_passthrough_rejects_gate_mismatch():
+    verifier = _verifier()
+    with set_http_request(_request({"X-Portainer-API-Key": "ptr_alice"})):
+        assert await verifier.verify_token("b" * 64) is None
+
+
+async def test_passthrough_rejects_missing_user_key(caplog):
+    verifier = _verifier()
+    with set_http_request(_request({})):  # gate ok, but no per-user key
+        with caplog.at_level(logging.WARNING, logger="portainer_mcp.audit"):
+            assert await verifier.verify_token(GATE) is None
+    outcomes = [json.loads(r.message)["outcome"] for r in caplog.records]
+    assert outcomes == ["no_user_key"]
+
+
+async def test_passthrough_rejects_invalid_user_key(caplog):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"message": "invalid token"})
+
+    verifier = _verifier(handler)
+    with set_http_request(_request({"X-Portainer-API-Key": "ptr_bad"})):
+        with caplog.at_level(logging.WARNING, logger="portainer_mcp.audit"):
+            assert await verifier.verify_token(GATE) is None
+    outcomes = [json.loads(r.message)["outcome"] for r in caplog.records]
+    assert outcomes == ["invalid_user_key"]
+
+
+async def test_passthrough_accepts_and_attributes_identity(caplog):
+    verifier = _verifier()
+    with set_http_request(_request({"X-Portainer-API-Key": "ptr_alice"})):
+        with caplog.at_level(logging.INFO, logger="portainer_mcp.audit"):
+            access = await verifier.verify_token(GATE)
+    assert access is not None
+    assert access.client_id == "portainer-mcp"
+    assert access.token == auth.fingerprint(GATE)
+    payload = json.loads(caplog.records[0].message)
+    assert payload["outcome"] == "ok"
+    assert payload["portainer_user_id"] == 7
+    assert payload["portainer_username"] == "alice"
+    assert payload["client_ip"] == "203.0.113.7"
+
+
+async def test_passthrough_ok_fires_only_on_validation_not_cache_hits(caplog):
+    # The audit `ok` marks a validation event (cache miss → upstream call), not
+    # every admitted request. The first request validates and logs; subsequent
+    # cache hits admit silently.
+    handler_calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        handler_calls["n"] += 1
+        return httpx.Response(200, json=ALICE)
+
+    verifier = _verifier(handler)
+    with set_http_request(_request({"X-Portainer-API-Key": "ptr_alice"})):
+        with caplog.at_level(logging.INFO, logger="portainer_mcp.audit"):
+            assert await verifier.verify_token(GATE) is not None  # miss → ok
+            assert await verifier.verify_token(GATE) is not None  # hit → silent
+            assert await verifier.verify_token(GATE) is not None  # hit → silent
+    oks = [r for r in caplog.records if r.name == "portainer_mcp.audit"]
+    assert len(oks) == 1
+    assert json.loads(oks[0].message)["outcome"] == "ok"
+    assert handler_calls["n"] == 1  # only the cache miss hit Portainer
+
+
+# --- TrustedProxyVerifier ----------------------------------------------------
+
+
+def _trusted_verifier(peers: str | None = None, handler=None):
+    matcher = auth_posture.PeerMatcher(peers) if peers else None
+    return auth.TrustedProxyVerifier(
+        _mock_client(handler), passthrough.ValidationCache(ttl=60), matcher
+    )
+
+
+async def test_trusted_proxy_ignores_bearer_value_when_scheme_attested(caplog):
+    # The proxy's own minted OAuth token rides in Authorization — any value
+    # must admit, and must never survive into logs or the AccessToken.
+    minted = "pomerium-minted-opaque-token-value"
+    verifier = _trusted_verifier()
+    request = _request({"X-Portainer-API-Key": "ptr_alice"}, scheme="https")
+    with set_http_request(request):
+        with caplog.at_level(logging.INFO, logger="portainer_mcp.audit"):
+            access = await verifier.verify_token(minted)
+    assert access is not None
+    assert minted not in access.token
+    for record in caplog.records:
+        assert minted not in record.message
+    payload = json.loads(caplog.records[0].message)
+    assert payload["outcome"] == "ok"
+    assert payload["portainer_username"] == "alice"
+
+
+async def test_trusted_proxy_inherited_rejects_plain_scheme(caplog):
+    # Without the trusted proxy's X-Forwarded-Proto rewrite the scheme stays
+    # http — the request did not transit the attested proxy.
+    verifier = _trusted_verifier()
+    request = _request({"X-Portainer-API-Key": "ptr_alice"}, scheme="http")
+    with set_http_request(request):
+        with caplog.at_level(logging.WARNING, logger="portainer_mcp.audit"):
+            assert await verifier.verify_token("whatever") is None
+    outcomes = [json.loads(r.message)["outcome"] for r in caplog.records]
+    assert outcomes == ["untrusted_scheme"]
+
+
+async def test_trusted_proxy_inherited_rejects_without_request_context(caplog):
+    verifier = _trusted_verifier()
+    with caplog.at_level(logging.WARNING, logger="portainer_mcp.audit"):
+        assert await verifier.verify_token("whatever") is None
+    outcomes = [json.loads(r.message)["outcome"] for r in caplog.records]
+    assert outcomes == ["untrusted_scheme"]
+
+
+async def test_trusted_proxy_peer_allowlist_admits_listed_peer(caplog):
+    verifier = _trusted_verifier(peers="203.0.113.0/24")
+    request = _request({"X-Portainer-API-Key": "ptr_alice"}, scheme="https")
+    with set_http_request(request):
+        with caplog.at_level(logging.INFO, logger="portainer_mcp.audit"):
+            access = await verifier.verify_token("whatever")
+    assert access is not None
+    assert json.loads(caplog.records[0].message)["outcome"] == "ok"
+
+
+async def test_trusted_proxy_peer_allowlist_rejects_unlisted_peer(caplog):
+    verifier = _trusted_verifier(peers="10.0.0.5")
+    request = _request(
+        {"X-Portainer-API-Key": "ptr_alice"}, scheme="https", client_host="203.0.113.7"
+    )
+    with set_http_request(request):
+        with caplog.at_level(logging.WARNING, logger="portainer_mcp.audit"):
+            assert await verifier.verify_token("whatever") is None
+    payload = json.loads(caplog.records[0].message)
+    assert payload["outcome"] == "untrusted_peer"
+    assert payload["peer"] == "203.0.113.7"
+
+
+async def test_trusted_proxy_still_requires_user_key(caplog):
+    # Attestation replaces the gate, never the per-user key floor.
+    verifier = _trusted_verifier()
+    with set_http_request(_request({}, scheme="https")):
+        with caplog.at_level(logging.WARNING, logger="portainer_mcp.audit"):
+            assert await verifier.verify_token("whatever") is None
+    outcomes = [json.loads(r.message)["outcome"] for r in caplog.records]
+    assert outcomes == ["no_user_key"]
+
+
+async def test_trusted_proxy_rejects_invalid_user_key(caplog):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"message": "invalid token"})
+
+    verifier = _trusted_verifier(handler=handler)
+    with set_http_request(_request({"X-Portainer-API-Key": "ptr_bad"}, scheme="https")):
+        with caplog.at_level(logging.WARNING, logger="portainer_mcp.audit"):
+            assert await verifier.verify_token("whatever") is None
+    outcomes = [json.loads(r.message)["outcome"] for r in caplog.records]
+    assert outcomes == ["invalid_user_key"]
+
+
+async def test_audit_marks_trust_proxy_posture(caplog, monkeypatch):
+    monkeypatch.setattr(auth, "_trust_proxy_auth", True)
+    verifier = _trusted_verifier()
+    with set_http_request(_request({"X-Portainer-API-Key": "ptr_alice"}, scheme="https")):
+        with caplog.at_level(logging.INFO, logger="portainer_mcp.audit"):
+            await verifier.verify_token("whatever")
+    payload = json.loads(caplog.records[0].message)
+    assert payload["auth_posture"] == "trust_proxy"
+
+
+def test_trusted_proxy_full_stack_issue_76_scenario():
+    # The deployment from issue #76: an identity-aware proxy (Pomerium MCP
+    # mode) terminates TLS and OAuth, then forwards with its own minted token
+    # in Authorization. Exercise the real middleware chain — request-context,
+    # placeholder injection, SDK bearer backend, verifier — not the verifier
+    # in isolation.
+    from fastmcp.server.http import RequestContextMiddleware
+    from starlette.applications import Starlette
+    from starlette.middleware import Middleware
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    verifier = auth.TrustedProxyVerifier(
+        _mock_client(), passthrough.ValidationCache(ttl=60)
+    )
+
+    async def endpoint(request):
+        return PlainTextResponse(
+            "authed" if request.user.is_authenticated else "anon"
+        )
+
+    app = Starlette(
+        routes=[Route("/mcp", endpoint, methods=["POST"])],
+        middleware=[
+            Middleware(RequestContextMiddleware),
+            *verifier.get_middleware(),
+        ],
+    )
+    key = {"X-Portainer-API-Key": "ptr_alice"}
+    minted = {"Authorization": "Bearer pomerium-minted-token"}
+
+    with TestClient(app, base_url="https://testserver") as tc:
+        # The proxy's own token in Authorization — admitted by attestation.
+        assert tc.post("/mcp", headers={**minted, **key}).text == "authed"
+        # Proxy stripped Authorization — the placeholder keeps it verifiable.
+        assert tc.post("/mcp", headers=key).text == "authed"
+        # No per-user key — the floor holds regardless of attestation.
+        assert tc.post("/mcp", headers=minted).text == "anon"
+    with TestClient(app, base_url="http://testserver") as tc:
+        # Plain scheme: the request did not transit the attested proxy.
+        assert tc.post("/mcp", headers={**minted, **key}).text == "anon"
+
+
+# --- _EnsureBearerMiddleware ---------------------------------------------------
+
+
+async def _run_ensure_bearer(headers: list[tuple[bytes, bytes]]) -> list:
+    seen: dict = {}
+
+    async def app(scope, receive, send):
+        seen["headers"] = scope["headers"]
+
+    middleware = auth._EnsureBearerMiddleware(app)
+    await middleware({"type": "http", "headers": headers}, None, None)
+    return seen["headers"]
+
+
+async def test_ensure_bearer_injects_placeholder_when_absent():
+    headers = await _run_ensure_bearer([(b"host", b"mcp.example.com")])
+    assert (b"authorization", b"Bearer proxy-attested") in headers
+
+
+async def test_ensure_bearer_leaves_existing_authorization_untouched():
+    original = [(b"authorization", b"Bearer pomerium-minted")]
+    headers = await _run_ensure_bearer(list(original))
+    assert headers == original
+
+
+async def test_trusted_proxy_get_middleware_prepends_ensure_bearer():
+    verifier = _trusted_verifier()
+    stack = verifier.get_middleware()
+    assert stack[0].cls is auth._EnsureBearerMiddleware
+
+
+async def test_passthrough_never_logs_the_user_key(caplog):
+    # The forwarded credential must never reach any audit record — only the
+    # identity it resolves to.
+    secret = "ptr_super_secret_value_that_must_not_leak"
+    verifier = _verifier()
+    with set_http_request(_request({"X-Portainer-API-Key": secret})):
+        with caplog.at_level(logging.INFO, logger="portainer_mcp.audit"):
+            await verifier.verify_token(GATE)  # ok
+            await verifier.verify_token("b" * 64)  # gate mismatch
+    for record in caplog.records:
+        assert secret not in record.message
+    allowed_keys = {
+        "event",
+        "outcome",
+        "client_ip",
+        "user_agent",
+        "session_id",
+        "portainer_user_id",
+        "portainer_username",
+    }
     for record in caplog.records:
         payload = json.loads(record.message)
         assert set(payload).issubset(allowed_keys), (

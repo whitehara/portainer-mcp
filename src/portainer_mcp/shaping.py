@@ -58,20 +58,34 @@ def project(data: Any, select: str) -> Any:
     try:
         return jmespath.search(select, data)
     except jmespath.exceptions.JMESPathError as exc:
-        raise ValueError(f"invalid JMESPath expression {select!r}: {exc}") from exc
+        # Models nesting the expression inside a JSON tool call routinely
+        # double-escape quoted identifiers, so literal \" reaches the lexer
+        # and fails with an opaque "Unknown token \". Name the fix.
+        hint = ""
+        if '\\"' in select:
+            hint = (
+                " (the expression contains literal backslash-escaped quotes; "
+                "send plain double quotes around dotted keys, or avoid "
+                "quoting entirely with a function filter such as "
+                "[?contains(metadata.name, 'foo')])"
+            )
+        raise ValueError(
+            f"invalid JMESPath expression {select!r}: {exc}{hint}"
+        ) from exc
 
 
 class ResponseCapMiddleware(Middleware):
     """Truncate oversized tool results with a hint to narrow `select`.
 
-    Applied uniformly to every tool. When truncation fires, the
-    `structured_content` field is also cleared so the model can't read
-    around the cap by inspecting the structured copy of the same payload.
+    Applied uniformly to every tool except `exempt` ones. When truncation
+    fires, the `structured_content` field is also cleared so the model can't
+    read around the cap by inspecting the structured copy of the same payload.
     """
 
-    def __init__(self, max_chars: int) -> None:
+    def __init__(self, max_chars: int, exempt: frozenset[str] = frozenset()) -> None:
         super().__init__()
         self.max_chars = max_chars
+        self._exempt = exempt
 
     async def on_call_tool(
         self,
@@ -79,6 +93,8 @@ class ResponseCapMiddleware(Middleware):
         call_next: CallNext,
     ) -> ToolResult:
         result = await call_next(context)
+        if context.message.name in self._exempt:
+            return result
         truncated = False
         for item in result.content:
             text = getattr(item, "text", None)
@@ -144,13 +160,17 @@ async def _select_wrapper(
     if isinstance(data, dict) and set(data.keys()) == {"result"}:
         data = data["result"]
 
-    redaction_count = 0
     if not expose:
-        data, redaction_count = redaction.redact_envs(data)
+        data, _ = redaction.redact_envs(data)
     if select:
         data = project(data, select)
 
-    content = [TextContent(type="text", text=json.dumps(data))]
+    body = json.dumps(data)
+    # Count what survived into the projected body, not what was redacted
+    # upstream — otherwise a projection that drops every env field still
+    # reports a non-zero count for values the caller never sees.
+    redaction_count = 0 if expose else redaction.count_in(body)
+    content = [TextContent(type="text", text=body)]
     if redaction_count:
         content.append(
             TextContent(type="text", text=redaction.hint(redaction_count))

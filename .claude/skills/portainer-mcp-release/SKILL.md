@@ -11,7 +11,7 @@ The release pipeline itself (PyPI publish via OIDC on tag push) is documented in
 
 ## Why a skill for this
 
-Spec bumps are infrequent (one per Portainer minor — quarterly-ish) and the work spans nine files. Most of those touches are mechanical version-pin updates, but two are easy to half-do:
+Spec bumps are infrequent (one per Portainer minor — quarterly-ish) and the work spans ten files. Most of those touches are mechanical version-pin updates, but two are easy to half-do:
 
 - **Op/tag deltas in `docs/profiles.md`** — the orphan table and default-coverage numbers are derived from the spec. Upstream often adds/removes/renames tags between minors. Stale numbers here mean users get the wrong picture of what the default profiles cover.
 - **CHANGELOG entry** — a one-liner that says "bumped spec" is much less useful than naming the deltas (operation count change, dropped tags). Skim of the changelog is how users decide whether the upgrade matters to them.
@@ -103,7 +103,7 @@ Output is in two parts: per-profile coverage numbers (use these in `docs/profile
 
 ### 6. Update files
 
-Nine files to touch. Listed in roughly the order it's natural to edit them:
+Ten files to touch. Listed in roughly the order it's natural to edit them:
 
 | File | Change |
 |---|---|
@@ -111,8 +111,9 @@ Nine files to touch. Listed in roughly the order it's natural to edit them:
 | `pyproject.toml` | `version = "X.Y.0"`. |
 | `uv.lock` | `uv lock` — refreshes the self-entry to match `pyproject`. |
 | `docs/profiles.md` | New per-profile and union numbers in the "Default coverage" paragraph; new orphan table (paste from the script); update the "350+/400+ operations across 40+ tags" lead if it crossed a round number. |
-| `README.md` | `~=X.Y.0` pin in the `claude mcp add` snippet; raw URL tag in the skill curl; new row in the compat matrix (keep prior rows — the matrix is cumulative). |
-| `docs/distribution/claude-desktop.md` | Same pin + skill URL bump as README. Check for additional client docs as `docs/distribution/` grows. |
+| `README.md` | `~=X.Y.0` pin in the `claude mcp add` snippet; new row in the compat matrix (keep prior rows — the matrix is cumulative). |
+| `docs/distribution/claude-desktop.md` | Same `~=X.Y.0` pin in the manual JSON config. Check for additional client docs as `docs/distribution/` grows. (No skill-install snippets to re-pin — the guide is bundled and served via `get_guidance`.) |
+| `skills/portainer-mcp-hygiene/SKILL.md` | Bump the `Skill version:` footer to `X.Y.0`. Issue reports filed via the skill's self-report section cite this footer — a stale value mislabels every report. |
 | `Makefile` | Update the example `VERSION=` in the `specs` comment/help text. |
 | `docs/versioning.md` | If the doc uses the old minor in prose examples (e.g. "2.41.x ↔ 2.41.x"), retarget to the new minor. |
 | `CHANGELOG.md` | Move the `[Unreleased]` block under a new `[X.Y.0] — YYYY-MM-DD` heading; leave a fresh empty `[Unreleased]` on top. The spec bump should be the lead Changed entry, naming old → new spec version and the headline deltas (op count change, any dropped/added tags). |
@@ -139,7 +140,8 @@ Adapt to what actually happened — if no tags were dropped, drop that sentence;
 
 ```bash
 git add CHANGELOG.md Makefile README.md docs/distribution/ docs/profiles.md \
-        docs/versioning.md pyproject.toml src/portainer_mcp/data/portainer-patched.yaml uv.lock
+        docs/versioning.md pyproject.toml skills/portainer-mcp-hygiene/SKILL.md \
+        src/portainer_mcp/data/portainer-patched.yaml uv.lock
 git commit -m "Release X.Y.0
 
 Bump embedded Portainer EE spec to X.Y.Z. <One-liner naming the headline
@@ -173,6 +175,8 @@ gh run watch
 ```
 
 The workflow verifies tag == `pyproject.version`, runs tests, builds the wheel, publishes to PyPI via OIDC Trusted Publishing. On success, the release is live at `https://pypi.org/project/mcp-portainer/X.Y.0/`.
+
+The same tag also fires `release-docker.yml` (Docker Hub image) and `release-mcpb.yml` (the Claude Desktop `.mcpb` bundles, attached to the GitHub Release). Both are independent of the PyPI publish. The `.mcpb` manifest version is stamped from the tag at build time — there is **no manifest file to bump** in Step 6. See [`docs/release.md`](../../../docs/release.md#github-release-mcpb-bundles).
 
 ## Gotchas
 

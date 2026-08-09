@@ -8,6 +8,7 @@ Covers the pure-data layers: `project()` and `ResponseCapMiddleware`.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from fastmcp.tools.tool import ToolResult
@@ -36,6 +37,13 @@ def test_project_raises_value_error_on_invalid_expression():
         project({}, "foo[")
 
 
+def test_project_hints_on_backslash_escaped_quotes():
+    # Double-escaped quoted identifiers (JSON-in-JSON) reach the lexer as
+    # literal \" — the error must name the fix, not just "Unknown token \".
+    with pytest.raises(ValueError, match="backslash-escaped quotes"):
+        project({}, 'Labels.\\"com.docker.compose.project\\"')
+
+
 # --- ResponseCapMiddleware --------------------------------------------------
 
 
@@ -46,11 +54,14 @@ def _result(text: str, structured: dict | None = None) -> ToolResult:
     )
 
 
-async def _run(middleware: ResponseCapMiddleware, result: ToolResult) -> ToolResult:
+async def _run(
+    middleware: ResponseCapMiddleware, result: ToolResult, tool: str = "EndpointList"
+) -> ToolResult:
     async def call_next(_ctx):
         return result
 
-    return await middleware.on_call_tool(context=None, call_next=call_next)
+    context = SimpleNamespace(message=SimpleNamespace(name=tool))
+    return await middleware.on_call_tool(context=context, call_next=call_next)
 
 
 async def test_cap_passes_through_when_under_limit():
@@ -69,6 +80,14 @@ async def test_cap_truncates_and_clears_structured():
     assert "truncated: response was 50 chars" in text
     assert "capped at 10" in text
     assert out.structured_content is None
+
+
+async def test_cap_skips_exempt_tool():
+    # get_guidance is wired exempt: `select` is a no-op there, so a truncated
+    # guide would leave the caller no way to retrieve the rest.
+    middleware = ResponseCapMiddleware(max_chars=10, exempt=frozenset({"get_guidance"}))
+    out = await _run(middleware, _result("x" * 50), tool="get_guidance")
+    assert out.content[0].text == "x" * 50
 
 
 # --- _select_wrapper redaction ---------------------------------------------
@@ -103,6 +122,19 @@ async def test_wrapper_redacts_before_select(monkeypatch):
     assert json.loads(result.content[0].text) == SENTINEL
     # Hint is still present.
     assert "redacted" in result.content[1].text
+
+
+async def test_wrapper_no_hint_when_select_drops_redacted_fields(monkeypatch):
+    # Env exists upstream and is redacted, but the projection keeps only
+    # non-env fields — the hint count must reflect the visible body (0), not
+    # the upstream redaction count, so no hint TextContent is emitted.
+    _stub_forward(
+        monkeypatch,
+        [{"Name": "a", "Env": [{"name": "DB", "value": "secret"}]}],
+    )
+    result = await shaping._select_wrapper(select="[].{name:Name}")
+    assert json.loads(result.content[0].text) == [{"name": "a"}]
+    assert len(result.content) == 1
 
 
 async def test_wrapper_exposes_when_toggle_set(monkeypatch):

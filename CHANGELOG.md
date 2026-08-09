@@ -9,6 +9,253 @@ the MCP server.
 
 ## [Unreleased]
 
+## [2.44.0] — 2026-07-30
+
+Targets Portainer 2.44.x.
+
+### Changed
+
+- **Embedded spec bumped to Portainer EE 2.44.0** (was 2.43.0). Total
+  operations 412 → 428. Default `BASE,DOCKER,KUBERNETES,GITOPS` coverage
+  moves 205 → 211 and the six-profile union 344 → 350. New `addons` tag
+  (5 ops, cluster addon management) added to the orphan list in
+  [`docs/profiles.md`](docs/profiles.md). `kaas` shrinks 4 → 1 op as three
+  cloud-provisioning endpoints (`/cloud/amazon/provision`,
+  `/cloud/azure/provision`, `/cloud/gke/provision`) were removed upstream;
+  `cloud_credentials` grows 6 → 11 and `observability` grows 15 → 18.
+
+### Security
+
+- **Dependency bumps clearing all open Dependabot alerts** (15 alerts, 8
+  packages, lockfile-only — no constraint changes): mcp 1.27.1 → 1.28.1
+  (session-to-principal binding, Host/Origin validation on the WebSocket
+  transport, task-handler isolation), starlette 1.2.0 → 1.3.1 (urlencoded
+  form-limit DoS, hostname poisoning), cryptography 48.0.0 → 48.0.1
+  (patched OpenSSL in wheels), python-multipart 0.0.29 → 0.0.31
+  (querystring-parsing DoS, parameter smuggling), pyjwt 2.12.1 → 2.13.0
+  (JWK-as-HMAC-secret confusion), joserfc 1.6.5 → 1.6.8 (empty HMAC key
+  accepted, payload-size-limit bypass), pydantic-settings 2.14.1 → 2.14.2
+  (secrets_dir symlink traversal), setuptools 82.0.1 → 83.0.0 (MANIFEST.in
+  exclusion bypass). Combines Dependabot PRs #83–#90 into one lockfile
+  update; the mcp SDK's new session binding is behaviourally inert here
+  (the verifiers report a constant principal), and its WebSocket /
+  experimental-tasks deprecations touch nothing this server uses.
+
+## [2.43.3] — 2026-07-23
+
+Targets Portainer 2.43.x.
+
+### Added
+
+- **Configurable upstream timeout** (`PORTAINER_TIMEOUT`, seconds) —
+  [#80](https://github.com/portainer/portainer-mcp/issues/80). The upstream
+  Portainer HTTP timeout was hardcoded at 30s, routinely too short for
+  stack creation (Portainer deploys synchronously — the request holds open
+  through image pull and compose up). The default rises to **120s**, the
+  connect phase stays capped at 10s so an unreachable Portainer still
+  fails fast, and the knob applies to both transports. Non-numeric or
+  non-positive values refuse to boot; the resolved posture is logged at
+  startup.
+
+### Changed
+
+- **Post-send timeouts now say the write may have succeeded** (#80). A
+  request that times out after reaching Portainer is ambiguous, not failed
+  — Portainer keeps processing, which is how two timed-out stack creates
+  left two stack records behind in #80. FastMCP's stock error ("please
+  retry") invites exactly the duplicate-creating reflex, so
+  `ReadTimeout`/`WriteTimeout` errors are rewritten to name the ambiguity,
+  instruct the model to verify current state (e.g. `StackList`) before
+  retrying, and point at `PORTAINER_TIMEOUT`. Connect-phase timeouts are
+  left untouched — the request never reached Portainer.
+
+## [2.43.2] — 2026-07-22
+
+Targets Portainer 2.43.x.
+
+### Fixed
+
+- **Guidance gate no longer keys on `Mcp-Session-Id` — clients behind
+  session-churning bridges are never locked out** (#75). The gate is now a
+  *toll booth*: the first tool call from a caller whose idle window has
+  lapsed is answered with the operating guide itself (plus a retry
+  instruction) instead of a "call `get_guidance` and retry" bounce, and the
+  caller is marked guided immediately — delivery is the proof, so nothing
+  needs to be correlated across requests and there is no lockout state.
+  Callers are identified by the authenticated principal (the per-user
+  API-key digest over HTTP, the process over stdio), the scoping SEP-2567
+  recommends now that major clients mint a fresh session id per tool call.
+  The window slides with activity (`PORTAINER_MCP_GUIDANCE_TTL`, default
+  1800s), so re-delivery happens on the next conversation, not mid-task —
+  including over stdio, where the old gate fired only once per process
+  lifetime. `PORTAINER_MCP_DISABLE_GUIDANCE_GATE=1` disables enforcement
+  entirely (install the hygiene skill manually on clients in that case);
+  `get_guidance` remains available on demand.
+
+### Added
+
+- **Trust-proxy auth posture** (`PORTAINER_MCP_TRUST_PROXY_AUTH=1`) for
+  deployments behind an identity-aware proxy that owns the `Authorization`
+  header (e.g. Pomerium in MCP server mode) —
+  [#76](https://github.com/portainer/portainer-mcp/issues/76). The gate-token
+  compare is replaced by per-request proxy attestation: inherited from the
+  `PORTAINER_MCP_TRUST_PROXY_TLS` + `PORTAINER_MCP_FORWARDED_ALLOW_IPS`
+  declaration behind a TLS-terminating proxy, or an explicit
+  `PORTAINER_MCP_TRUSTED_PROXY_AUTH_IPS` socket-peer allowlist when the
+  server terminates TLS itself. Exactly one auth posture must be declared
+  (gate token XOR trust-proxy); every degenerate combination — both, neither,
+  trust + plaintext opt-out, wildcard allowlists (`*` or zero-prefix CIDRs),
+  a server-held cert alongside the inherited shape, a peer allowlist without
+  the trust flag — refuses to boot, and the
+  per-user `X-Portainer-API-Key` validation floor is unchanged. New audit
+  outcomes `untrusted_scheme` / `untrusted_peer`; audit records under this
+  posture carry `auth_posture: "trust_proxy"`.
+
+## [2.43.1] — 2026-07-02
+
+Targets Portainer 2.43.x.
+
+### Added
+
+- **New `GITOPS` profile** bundling the `gitops` tag (register/list/test git
+  sources, browse refs — the GitOps *source* management surface).
+- **JMESPath errors now diagnose double-escaped quotes.** When a `select`
+  expression fails to parse and contains literal `\"` (the JSON-in-JSON
+  double-escaping models fall into), the error names the cause and suggests
+  plain double quotes or a `contains(...)` filter instead of the lexer's
+  opaque `Unknown token \`.
+- **Hygiene guide: four field-tested additions** from agent usage reports —
+  the backslash-escaping trap and its `contains()` workaround; the
+  `400 … EOF` rejection when a write call sends zero body fields (e.g. a
+  bare `StackGitRedeploy` — pass `Prune: false`); verifying a K8s deploy
+  end-to-end via the service-proxy path; and which `StackCreateKubernetesGit`
+  fields are the blessed path (`SourceID`) vs the still-functional deprecated
+  inline `Repository*` fields.
+
+### Changed
+
+- **`gitops` is now in the default profile set.** Since Portainer 2.43 a
+  registered GitOps source is required to deploy a git-backed stack, so
+  `gitops` now rides along inside both `DOCKER` and `KUBERNETES` (next to
+  `stacks`) and the default `PORTAINER_PROFILES` becomes
+  `BASE,DOCKER,KUBERNETES,GITOPS`. Without it, git-based stack deploys fail
+  for lack of a source. `gitops` is removed from the orphan-tag inventory in
+  [`docs/profiles.md`](docs/profiles.md).
+
+## [2.43.0] — 2026-06-29
+
+Targets Portainer 2.43.x.
+
+### Changed
+
+- **Embedded spec bumped to Portainer EE 2.43.0** (was 2.42.0). Total
+  operations 409 → 412. Default `BASE,DOCKER,KUBERNETES` coverage moves
+  193 → 190 and the five-profile union 334 → 329: upstream resolved a
+  long-standing tagging defect by moving the Edge-agent callbacks
+  (heartbeat/status, async poll, alert + chart status, edge stack/job sync)
+  off the `endpoints` tag onto a new dedicated `edge_agent` tag, so they no
+  longer leak into the DOCKER profile as tools that can never succeed for a
+  non-agent caller. New `allowlist` tag (2 ops, URL allow list) added to the
+  orphan list in [`docs/profiles.md`](docs/profiles.md).
+- **Edge-agent callback exclusion is now tag-based.** `spec/patch_spec.py`
+  drops every operation carrying the new `edge_agent` tag (eight callbacks
+  that 403 for any caller without `X-PortainerAgent-EdgeID`), replacing the
+  previous four-op `(method, path)` matcher — possible because 2.43.0 also
+  gave 15 of 16 previously-unnamed operations an `operationId` (webhooks,
+  endpoint-group create, docker browse-put, edge key generate, the edge
+  callbacks, and the websocket ops).
+
+## [2.42.6] — 2026-06-18
+
+Targets Portainer 2.42.x.
+
+### Added
+
+- **Claude Desktop one-click `.mcpb` bundles.** The server now ships as a
+  self-contained PyInstaller binary bundle (no Python/uv/Node needed on the
+  client), built per-platform (`darwin-arm64`, `win32-x64`, `linux-x64`) on
+  tag push and attached to the GitHub Release. See
+  [#72](https://github.com/portainer/portainer-mcp/pull/72). Bundles are
+  unsigned for now — Gatekeeper/SmartScreen workaround is documented in
+  [`docs/distribution/claude-desktop.md`](docs/distribution/claude-desktop.md).
+- **Bundled hygiene guidance, served on demand via a `get_guidance` tool.**
+  The full `portainer-mcp-hygiene` skill now ships with every install method
+  (uvx, container, `.mcpb`) sourced from the same `SKILL.md`, so it can't
+  drift. A `GuidanceGateMiddleware` requires `get_guidance` once per session
+  (transport-aware session scoping) so the guide reliably lands in context
+  rather than relying on the truncatable `instructions` field. A missing
+  guide is now a hard startup failure, matching the loud-fail-on-misconfig
+  convention.
+
+### Changed
+
+- **Hygiene skill guidance expanded** to cover mutations and typed Kubernetes
+  field shapes, and to report its own gaps (failing `select` examples,
+  redaction/truncation mismatches, missing tools) as scrubbed,
+  consent-gated issues against `portainer/portainer-mcp`. See
+  [#71](https://github.com/portainer/portainer-mcp/pull/71).
+
+### Removed
+
+- **Manual hygiene-skill curl install instructions** (README,
+  `docs/distribution/claude-desktop.md`). The guide is now bundled and served
+  via `get_guidance`, so the curl-install snippets were redundant and
+  drift-prone.
+
+## [2.42.5] — 2026-06-09
+
+Targets Portainer 2.42.x.
+
+### Changed
+
+- **BREAKING (HTTP transport): the HTTP credential model is now per-user
+  passthrough.** Previously the HTTP bearer token gated access while a single
+  shared `PORTAINER_API_KEY` was the upstream Portainer credential for every
+  caller. Now the bearer token is only a gate, and each caller must supply
+  **their own** Portainer API key in the `X-Portainer-API-Key` header; it is
+  validated against `/users/me` and injected upstream per-request. **Setting
+  `PORTAINER_API_KEY` under `PORTAINER_MCP_TRANSPORT=http` now hard-fails at
+  startup** — it is a stdio-only credential. Migration: drop `PORTAINER_API_KEY`
+  from your HTTP deployment and have each client send `X-Portainer-API-Key`
+  alongside the existing `Authorization: Bearer` gate token. Stdio transport is
+  unchanged. Validation is cached positive-only (TTL
+  `PORTAINER_MCP_AUTH_CACHE_TTL`, default 60s); audit records gain
+  `no_user_key` / `invalid_user_key` outcomes and the `tool` name, and the
+  per-user key is never logged. See [#66](https://github.com/portainer/portainer-mcp/pull/66).
+- **Bumped `fastmcp` to `>=3.4.2` and dropped the direct `starlette` pin.** The
+  CVE-2026-48710 floor is now carried transitively by the newer fastmcp, so the
+  explicit starlette pin added in 2.42.3 is no longer needed.
+
+### Added
+
+- **TLS posture enforcement on non-loopback HTTP binds.** The server refuses to
+  boot on a non-loopback bind unless the operator declares one of three shapes:
+  a server-terminated cert (`PORTAINER_MCP_TLS_CERT` / `_TLS_KEY`), proxy TLS
+  attestation (`PORTAINER_MCP_TRUST_PROXY_TLS=1` + `..._FORWARDED_ALLOW_IPS`),
+  or the loud plaintext opt-out
+  (`PORTAINER_MCP_DANGEROUSLY_ALLOW_PLAINTEXT_HTTP=1`, which marks every audit
+  record `insecure_transport: true`). Loopback binds are exempt for dev. A
+  `TLSRequiredMiddleware` backstop runs *before* auth, so a plaintext request is
+  rejected before any per-user key is validated or forwarded upstream.
+  Self-signed certs WARN, never block. See [#67](https://github.com/portainer/portainer-mcp/pull/67).
+
+### Documentation
+
+- Clarified in the `portainer-mcp-hygiene` skill that an edge agent's health
+  comes from its heartbeat, not its `Status` field. See
+  [#70](https://github.com/portainer/portainer-mcp/pull/70).
+
+## [2.42.4] — 2026-06-02
+
+Targets Portainer 2.42.x.
+
+### Changed
+
+- **Container images are now multi-arch (`linux/amd64` + `linux/arm64`).**
+  The Docker Hub release workflow adds a QEMU setup step and builds both
+  platforms into a single manifest list under the existing `:X.Y.Z` / `:X.Y`
+  tags.
+
 ## [2.42.3] — 2026-05-29
 
 Targets Portainer 2.42.x.

@@ -18,6 +18,9 @@ data/portainer-patched.yaml ──► FastMCP.from_openapi ──► tag filter 
                                                   redact_envs (before projection)
                                                                       │
                                                                       ▼
+                                          GuidanceGateMiddleware (toll booth, per call)
+                                                                      │
+                                                                      ▼
                                                   ResponseCapMiddleware (per call)
                                                                       │
                                                                       ▼
@@ -31,8 +34,10 @@ data/portainer-patched.yaml ──► FastMCP.from_openapi ──► tag filter 
 `build_server()` loads `src/portainer_mcp/data/portainer-patched.yaml` (a
 locally-patched copy of Portainer's EE OpenAPI spec, bundled into the
 wheel and read via `importlib.resources`) and hands it to
-`FastMCP.from_openapi` with a shared `httpx.AsyncClient` carrying the
-operator's `X-API-KEY`. Each operation becomes an MCP tool.
+`FastMCP.from_openapi` with a shared `httpx.AsyncClient`. Under stdio the
+client carries the operator's `X-API-KEY` directly; under HTTP it carries no
+baked key — a per-request hook injects each caller's own key (see *HTTP auth*).
+Each operation becomes an MCP tool.
 
 ### Tag filter — `profiles.py`
 
@@ -69,21 +74,108 @@ client-side UX signal, not enforcement — the server's actual read-only
 guarantee is the `GET`/`HEAD` `RouteMap` restriction and the proxy's
 method check.
 
-### HTTP auth — `auth.py`
+### HTTP auth — `auth.py` and `passthrough.py`
 
-Only relevant when `PORTAINER_MCP_TRANSPORT=http`. `build_server()` reads
-`PORTAINER_MCP_AUTH_TOKEN`, validates it (min 32 chars, ASCII printable,
-no whitespace, loud-fail on any defect), and wires a
-`StaticBearerVerifier` — a `fastmcp.server.auth.TokenVerifier` subclass —
-into the FastMCP constructor. Every HTTP request must carry
-`Authorization: Bearer <token>`; the verifier uses `hmac.compare_digest`
-for constant-time comparison and returns `None` on mismatch, at which
-point FastMCP renders the 401 + `WWW-Authenticate` response itself. Stdio
-transport short-circuits the auth path entirely (`_get_auth_context()` in
-FastMCP). Every verify attempt — success or mismatch — emits a structured
-audit record on the `portainer_mcp.audit` sub-logger carrying the
-per-request context (see below); the attempted token bytes are never
-logged.
+Only relevant when `PORTAINER_MCP_TRANSPORT=http`. HTTP is **per-user
+passthrough**, not a shared upstream identity: there is no mode flag, and a
+shared `PORTAINER_API_KEY` over HTTP is a hard-fail misconfiguration (it's the
+stdio-only credential). Two layered checks run on every request, both inside
+`PassthroughVerifier.verify_token` so a failure 401s before any tool dispatch:
+
+1. **Front gate.** `build_server()` reads `PORTAINER_MCP_AUTH_TOKEN`, validates
+   it (min 32 chars, ASCII printable, no whitespace, loud-fail on any defect),
+   and the verifier constant-time-compares the request's `Authorization: Bearer`
+   against it (`hmac.compare_digest`). A miss returns `None` → FastMCP renders
+   401 + `WWW-Authenticate`. The gate stops credential-less floods at a cheap
+   local 401 before they reach Portainer. It has exactly one alternative — the
+   trust-proxy auth posture below — and never a silent opt-out.
+2. **Per-user validation.** The caller's own Portainer key rides in a separate
+   `X-Portainer-API-Key` header. The verifier validates it against
+   `GET /users/me?noEndpointAuthorizations=true` (`passthrough.validate`) and
+   only on success admits the request, capturing `id/username` for the
+   audit log. Missing key → `no_user_key`; invalid/unreachable → `invalid_user_key`;
+   both 401, with no fallback to a shared key.
+
+The validated key is then injected upstream as `X-API-KEY` by an httpx request
+hook (`passthrough.inject_api_key`) that reads **only** the in-flight request,
+so one caller can never borrow another's key, and **fails closed** (raises)
+rather than ever sending a keyless upstream call. The two headers carry
+*distinct* credentials — the gate token (`Authorization`, verified, never
+forwarded) and the per-user key (`X-Portainer-API-Key`, validated, forwarded) —
+so the verified credential and the forwarded one are never the same value.
+
+Validation is cached positive-only (`ValidationCache`, keyed by the SHA-256 of
+the key, never the raw key) for `PORTAINER_MCP_AUTH_CACHE_TTL` seconds (default
+60). This collapses a session to one upstream `/users/me` per key per window;
+the front gate keeps the miss path from being an open amplifier. The TTL is a
+performance/DoS knob, not the authorization boundary — Portainer still rejects
+a revoked key on every real upstream call, so a stale entry lets a dead key
+pass the door for at most one window but never *act*. Negatives are never
+cached so a freshly minted key isn't locked out.
+
+Stdio transport short-circuits the auth path entirely (`_get_auth_context()` in
+FastMCP) and keeps the single baked `X-API-KEY`. The verifier emits structured
+audit records on the `portainer_mcp.audit` sub-logger carrying the per-request
+context (see below). `ok` fires only on a *validation* — a cache miss that
+round-trips `/users/me` — so it marks a validation event (~one per key per TTL
+window), not every admitted request; cache hits admit silently. The failure
+outcomes `mismatch` / `no_user_key` / `invalid_user_key` are uncached and fire
+on every failing request. The attempted gate-token bytes and the per-user key
+are **never** logged (regression-tested).
+
+### Auth posture — `auth_posture.py`
+
+An identity-aware proxy that performs the MCP OAuth flow (e.g. Pomerium in
+MCP server mode) mints its own access token and *owns* the `Authorization`
+header on the upstream request — a static gate token cannot survive that hop
+([#76](https://github.com/portainer/portainer-mcp/issues/76)). `resolve()`
+runs at startup (mirroring `tls.resolve_posture`) and requires **exactly one**
+auth posture; both or neither refuse to boot:
+
+- **Gate token** (default) — `PORTAINER_MCP_AUTH_TOKEN`, the flow above.
+- **Trust-proxy auth** — `PORTAINER_MCP_TRUST_PROXY_AUTH=1`. The bearer value
+  is ignored entirely (`TrustedProxyVerifier`; a small pre-auth middleware
+  injects a placeholder when the proxy strips `Authorization` outright, since
+  the SDK's bearer backend 401s header-less requests before `verify_token`).
+  What replaces the gate compare is per-request proof the request transited
+  the proxy, in one of two shapes.
+
+The two shapes exist because uvicorn's proxy-header middleware rewrites
+`scope["client"]` from `X-Forwarded-For` for connections arriving from
+`PORTAINER_MCP_FORWARDED_ALLOW_IPS` — so "check the socket peer" and "trust
+the proxy's forwarded headers" are mutually exclusive signals:
+
+1. **Inherited** (TLS-terminating proxy, the common shape): requires
+   `PORTAINER_MCP_TRUST_PROXY_TLS=1` + `FORWARDED_ALLOW_IPS`; no extra
+   variable. The attestation is `scheme == "https"`: uvicorn sets it only
+   from a trusted peer's `X-Forwarded-Proto`, and this shape holds no cert,
+   so a direct connection can never present it. Because "holds no cert" is
+   load-bearing, `TLS_CERT` set alongside this shape is a startup error —
+   a server-held cert would let every direct TLS connection self-attest.
+   A wildcard in `FORWARDED_ALLOW_IPS` (`*` or a zero-prefix network like
+   `0.0.0.0/0`) is likewise a startup error here — inheritance turns that
+   list into the auth boundary.
+2. **Socket peer** (server-terminated TLS, end-to-end encrypted):
+   `PORTAINER_MCP_TRUSTED_PROXY_AUTH_IPS=<ip/cidr,…>` names the proxy
+   directly; `resolve()` returns `proxy_headers: False` so uvicorn never
+   rewrites the peer, and the verifier checks `scope["client"]` against the
+   allowlist (`PeerMatcher`; wildcard and non-IP entries hard-fail).
+   Incompatible with `TRUST_PROXY_TLS`/`FORWARDED_ALLOW_IPS` (the rewrite
+   would corrupt the peer signal) and requires `TLS_CERT`/`_TLS_KEY` on a
+   non-loopback bind.
+
+Degenerate combinations all hard-fail: gate token + trust flag (ambiguous),
+trust flag + plaintext opt-out (the per-user key would be the only credential
+and it must not cross plaintext), trust flag without
+`PORTAINER_MCP_ALLOWED_HOSTS` on a non-loopback bind, and
+`TRUSTED_PROXY_AUTH_IPS` without the trust flag (silently dead security
+config). Failed attestation
+audits as `untrusted_peer` / `untrusted_scheme` (per-request, uncached), and
+every audit record under this posture carries `auth_posture: "trust_proxy"`.
+The per-user `X-Portainer-API-Key` floor is untouched in both postures —
+trust-proxy auth drops the *gate*, never authentication — and IP/scheme
+attestation is weaker than a secret in flat container networks: the operator
+owns keeping the proxy the only workload that can reach the bind address.
 
 ### HTTP security — `http_security.py`
 
@@ -106,12 +198,52 @@ error. The 421 response body is also rewritten to name
 `PORTAINER_MCP_ALLOWED_HOSTS` so the operator sees the same pointer from
 the client side.
 
+### TLS posture — `tls.py`
+
+Only relevant under HTTP. The server carries two secrets on the wire (the
+gate token and each caller's permanent Portainer key), so plaintext is
+never served on a non-loopback bind by accident. `resolve_posture(host)`
+runs at startup and **refuses to boot** unless one posture is declared,
+loud-failing (like the auth-token check) on any broken declaration — it
+never silently downgrades. Operators pick one of three shapes, all
+collapsing to a single runtime signal, `scheme == "https"`:
+
+1. **Server-terminated TLS** — `PORTAINER_MCP_TLS_CERT`/`_TLS_KEY` are
+   threaded into uvicorn's `ssl_certfile`/`ssl_keyfile` via the
+   `uvicorn_config` dict, so the process speaks HTTPS directly. The server
+   holds the cert, so it can `is_self_signed()`-check it and WARN (the only
+   posture where it can inspect the cert).
+2. **TLS-terminating proxy** — `PORTAINER_MCP_TRUST_PROXY_TLS=1` (explicit
+   attestation) plus `PORTAINER_MCP_FORWARDED_ALLOW_IPS` make uvicorn trust
+   the proxy's `X-Forwarded-Proto`, which rewrites the scheme. The
+   attestation is separate from `PORTAINER_MCP_FORWARDED_ALLOW_IPS` (a functional knob)
+   so a plaintext proxy can't silently satisfy the gate.
+3. **Plaintext opt-out** — `PORTAINER_MCP_DANGEROUSLY_ALLOW_PLAINTEXT_HTTP=1`
+   is the one loud escape hatch; it WARNs every start and sets
+   `auth.mark_insecure_transport()` so every audit record carries
+   `insecure_transport: true`.
+
+`TLSRequiredMiddleware` enforces `scheme == "https"` as a backstop (a
+direct plaintext hit that bypasses a Tier-2 proxy still 426s). It is
+installed via the verifier's `get_middleware()` — `PassthroughVerifier.
+add_pre_auth_middleware()` stacks it *ahead* of the bearer-auth backend, so
+a plaintext request is rejected before the per-user key is validated and
+forwarded upstream (the `server.run(middleware=[…])` list runs *after*
+auth, which is why DNS-rebinding sits there but the TLS check can't). The
+loopback exemption is keyed on the **bind host** at install time, never on
+the per-request client IP. There is no auto-self-signed mode: Node-based
+MCP clients reject self-signed certs and none pin by fingerprint, so it
+would be encrypted-but-unconnectable; a homelab operator mounts their own
+(warned) instead.
+
 ### Per-request context — `request_context.py`
 
 `snapshot()` returns `client_ip`, `user_agent`, and the MCP
 `Mcp-Session-Id` for the in-flight HTTP request via
 `fastmcp.server.dependencies.get_http_request()`. Both the audit log (in
-`auth.verify_token`) and the FastMCP request log call it. Reading
+the verifier) and the FastMCP request log call it. `passthrough.py` reads
+the same live request for the per-user key (`key_from_request`) and for
+cache-only identity enrichment (`identity_audit_fields`). Reading
 directly from the live request avoids a subtle bug: MCP's
 streamable-HTTP session manager dispatches every JSON-RPC message into a
 long-lived task whose ContextVars were captured at session-creation
@@ -129,15 +261,20 @@ and merges records whose `msg` parses as a JSON object into that
 envelope, so audit and request records become first-class fields rather
 than nested strings. Two structured emitters feed it:
 
-- **Auth audit** — `StaticBearerVerifier.verify_token` emits one record
-  per attempt on `portainer_mcp.audit`, carrying outcome + per-request
-  context (`client_ip`, `user_agent`, `session_id`).
+- **Auth audit** — the verifier emits records on `portainer_mcp.audit`,
+  carrying outcome + per-request context (`client_ip`, `user_agent`,
+  `session_id`). `ok` fires only on a validation (cache miss), attributed with
+  the validated Portainer identity (`portainer_user_id`, `portainer_username`);
+  cache hits are silent. Failure outcomes fire per request.
 - **Request log** — `_ContextualStructuredLogging`, a thin subclass of
   FastMCP's `StructuredLoggingMiddleware`, adds the same per-request
   context to the before/after/error records the middleware already
-  emits. The upstream `source: "client"` field is dropped from
-  consideration as a caller distinguisher — one shared bearer means
-  every request shows the same value.
+  emits, plus the validated Portainer identity (read from the validation
+  cache, never the key) and, for a `tools/call`, the `tool` name (the
+  bare `method` is only ever `tools/call`). The upstream `source` field is
+  dropped entirely — it's a `Literal["client","server"]` that the request
+  path always stamps `"client"`, so it carries no signal; identity is what
+  distinguishes callers.
 
 `_setup_logging()` also strips pre-existing handlers from `fastmcp`,
 `httpx`, and `uvicorn.*` loggers and passes `uvicorn_config={"log_config":
@@ -183,6 +320,36 @@ proxy tools (`_apply_select`) — call `redact_envs` before applying the
 JMESPath. Non-JSON proxy bodies (Docker logs / stats / error pages)
 pass through unchanged: the walker is field-name driven and has
 nothing to match.
+
+`get_guidance` is exempt from the cap: it serves the full operating
+guide, and `select` — the cap's escape hatch — is a no-op there, so a
+truncated guide would be a dead end.
+
+### Guidance gate — `guidance.py`
+
+The full hygiene guide is too large for the MCP `instructions` field
+(clients truncate it at ~2KB), so it's served by a `get_guidance` tool —
+and delivered proactively by `GuidanceGateMiddleware`, a *toll booth*:
+the first tool call from a caller whose idle window has lapsed is
+answered with the guide itself plus a retry instruction (the tool is not
+executed), and the caller is marked guided immediately. Delivery is the
+proof, so nothing is correlated across requests and no lockout state
+exists.
+
+Callers are keyed on the authenticated principal — the SHA-256 digest of
+the per-user `X-Portainer-API-Key` over HTTP, a process-wide sentinel
+over stdio — and never on `Mcp-Session-Id`: clients and bridges mint a
+fresh session id per request (SEP-2567), which is what permanently
+locked out callers under the old session-keyed gate (#75). The window
+slides with activity (`PORTAINER_MCP_GUIDANCE_TTL`, default 1800s), so
+re-delivery lands on the next conversation, not mid-task.
+`PORTAINER_MCP_DISABLE_GUIDANCE_GATE=1` disables enforcement.
+
+Middleware order is load-bearing: the gate sits *inside* the structured
+request log (a bounced attempt is still recorded — it also emits its own
+`guidance_bounce` record, since the request log shows the call as a
+normal success) but *outside* `ResponseCapMiddleware` (the bounce
+carries the full guide and must never be truncated).
 
 ## Why this shape
 

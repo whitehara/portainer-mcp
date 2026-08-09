@@ -85,12 +85,68 @@ Key things to internalise before changing code:
   one-line summary TextContent naming the env var.
 - **HTTP transport requires a bearer token.** `auth.py` defines
   `StaticBearerVerifier` (a `fastmcp.server.auth.TokenVerifier` subclass
-  using `hmac.compare_digest`); `build_server()` wires it into
+  using `hmac.compare_digest`); `build_server()` wires a verifier into
   `FastMCP.from_openapi(..., auth=…)` only when transport=http. Stdio
   ignores `PORTAINER_MCP_AUTH_TOKEN`. Strict validation at startup
   (min 32 chars, ASCII printable, no whitespace) — loud-fail like the
   unknown-profile check. Don't relax this for "convenience"; the strict
   rule eliminates the make-dev-no-token footgun.
+- **Auth posture is an enum: gate token XOR trust-proxy.** `auth_posture.
+  resolve()` (mirrors `tls.resolve_posture`) runs before the verifier is
+  built. `PORTAINER_MCP_TRUST_PROXY_AUTH=1` serves identity-aware proxies
+  that own `Authorization` (issue #76, Pomerium MCP mode): the bearer value
+  is ignored (`auth.TrustedProxyVerifier`; `_EnsureBearerMiddleware` injects
+  a placeholder when the proxy strips the header, because the SDK 401s
+  header-less requests before `verify_token`) and the gate compare is
+  replaced by per-request proxy attestation. Two shapes, because uvicorn
+  rewrites `scope["client"]` from XFF for trusted peers so socket-peer and
+  forwarded-header trust are mutually exclusive signals: *inherited*
+  (requires `TRUST_PROXY_TLS=1`; attestation is `scheme == "https"`, which
+  only a `FORWARDED_ALLOW_IPS` peer can produce since no cert is held) and
+  *socket peer* (`PORTAINER_MCP_TRUSTED_PROXY_AUTH_IPS` + server-terminated
+  TLS; resolve() emits `proxy_headers: False` so the peer stays raw).
+  Hard-fails: both postures declared, neither, trust + plaintext opt-out,
+  wildcard in the effective allowlist (`*` or zero-prefix CIDR like
+  `0.0.0.0/0`), `TLS_CERT` alongside the inherited shape (a server-held
+  cert lets any direct connection present https, voiding the attestation),
+  `TRUSTED_PROXY_AUTH_IPS` combined with `TRUST_PROXY_TLS`/
+  `FORWARDED_ALLOW_IPS` or set without the trust flag, missing
+  `ALLOWED_HOSTS` on a non-loopback bind. `PeerMatcher` unmaps IPv4-mapped
+  IPv6 peers (dual-stack binds). The per-user `X-Portainer-API-Key` floor is
+  unchanged — trust-proxy drops the gate, never authentication. New audit
+  outcomes `untrusted_scheme` / `untrusted_peer`; records carry
+  `auth_posture: "trust_proxy"`.
+- **HTTP is per-user passthrough, not a shared upstream key.** Over HTTP
+  the verifier is `auth.PassthroughVerifier` (subclass of
+  `StaticBearerVerifier`), and `PORTAINER_API_KEY` is *not* loaded — it's
+  the stdio-only credential, and `build_server()` hard-fails if it's set
+  under http (a misconfiguration, not a silent fallback). Two layered
+  checks run inside one `verify_token` so a failure 401s before any tool
+  dispatch: (1) the gate token in `Authorization` is constant-time
+  compared by the parent; (2) the caller's own key in the separate
+  `X-Portainer-API-Key` header is validated against `/users/me`
+  (`passthrough.validate`, positive-only `ValidationCache` keyed by the
+  SHA-256 of the key, TTL `PORTAINER_MCP_AUTH_CACHE_TTL` default 60).
+  The validated key is injected upstream as `X-API-KEY` by the
+  `passthrough.inject_api_key` httpx request hook, which reads *only* the
+  in-flight request (so one caller can't borrow another's key) and **fails
+  closed** — it raises rather than ever sending a keyless upstream call.
+  The two headers carry distinct credentials (gate vs per-user key), so
+  the verified token and the forwarded token are never the same value;
+  the httpx client under http therefore carries no baked `X-API-KEY`
+  (stdio still does). Audit outcomes gain `no_user_key` /
+  `invalid_user_key`. `ok` fires only on a *validation* (a cache miss that
+  hits `/users/me`), attributed with `portainer_user_id/username` — so it
+  marks a validation event (~one per key per TTL window), not every
+  admitted request; cache hits admit silently (`validate()` returns
+  `(identity, validated_now)` so the verifier knows which). The failure
+  outcomes are uncached and fire per request. The per-user key itself is
+  never logged (regression-tested). The structured request log adds the
+  `tool` name on a `tools/call` (the bare `method` is only ever
+  `tools/call`). The cache TTL is a
+  perf/DoS knob, not the authz boundary (Portainer rejects a revoked key
+  on every real call); never negative-cache (it would lock out a fresh
+  key).
 - **Two HTTP hardening layers stack on top of the bearer.** Wired in
   `build_server()` + `main()`: a contextualised `StructuredLoggingMiddleware`
   applies to every transport; `http_security.DNSRebindingMiddleware` is
@@ -140,6 +196,28 @@ Key things to internalise before changing code:
   localhost defaults, and the MCP spec MUSTs the check itself, not the
   configurability. Don't re-add an `ALLOWED_ORIGINS` env var unless a
   real browser-hosted client use case shows up.
+- **TLS posture hard-fails on a non-loopback bind.** `tls.resolve_posture()`
+  in `main()` refuses to boot unless the operator declares one of three
+  shapes — server-terminated cert (`PORTAINER_MCP_TLS_CERT`/`_TLS_KEY` →
+  uvicorn `ssl_certfile`/`ssl_keyfile`), proxy attestation
+  (`PORTAINER_MCP_TRUST_PROXY_TLS=1` + `..._FORWARDED_ALLOW_IPS` →
+  `forwarded_allow_ips`), or the one loud plaintext opt-out
+  (`PORTAINER_MCP_DANGEROUSLY_ALLOW_PLAINTEXT_HTTP=1`). Loopback binds are
+  exempt (dev). Both encrypted shapes converge on `scope["scheme"] ==
+  "https"`, enforced by `TLSRequiredMiddleware` as a backstop. Critically,
+  that middleware is installed via `PassthroughVerifier.get_middleware()`
+  (`add_pre_auth_middleware`), **not** the `server.run(middleware=[…])` list
+  — the list runs after the auth backend, but the TLS check must run *before*
+  it so a plaintext request is rejected before the per-user key is validated
+  and forwarded upstream (amplification). The loopback exemption is keyed on
+  the bind host at install time, never the per-request client IP. The
+  plaintext opt-out also flips `auth.mark_insecure_transport()`, so every
+  audit record carries `insecure_transport: true`. Self-signed certs WARN,
+  never block — the server only holds the leaf and can't judge true trust, so
+  a hard-fail would be inconsistent (it'd miss internal-CA certs) and would
+  break the legitimate mount-your-own-cert homelab path. No auto-self-signed
+  mode: real MCP clients reject self-signed certs and don't pin by
+  fingerprint.
 - **Log shape is selectable.** `PORTAINER_MCP_LOG_FORMAT=text|json`
   (default `text`, container image overrides to `json`). The `json`
   formatter merges records whose `msg` is itself a JSON object into the
@@ -181,7 +259,7 @@ notes" section in [`docs/release.md`](docs/release.md).
 ## Profiles
 
 Spec exposes ~380 operations across 40+ tags; profiles in `profiles.py`
-bundle them. `PORTAINER_PROFILES` (default `BASE,DOCKER,KUBERNETES`)
+bundle them. `PORTAINER_PROFILES` (default `BASE,DOCKER,KUBERNETES,GITOPS`)
 selects which to enable; `PORTAINER_TAGS_EXTRA` appends raw tags as an
 escape hatch. `PORTAINER_PROFILES=ALL` disables the tag filter entirely.
 Unknown profile names fail at startup; unknown extras log a warning and

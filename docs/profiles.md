@@ -6,7 +6,7 @@ The Portainer API spec exposes 400+ operations across 40+ tags. Auto-converting 
 
 | Env var | Default | Effect |
 |---|---|---|
-| `PORTAINER_PROFILES` | `BASE,DOCKER,KUBERNETES` | Comma-separated profiles to enable. Tag sets are union'd. Empty or unset → default. |
+| `PORTAINER_PROFILES` | `BASE,DOCKER,KUBERNETES,GITOPS` | Comma-separated profiles to enable. Tag sets are union'd. Empty or unset → default. |
 | `PORTAINER_TAGS_EXTRA` | _empty_ | Comma-separated extra tags appended to the union. Literal tag names only — no wildcards or globs. Escape hatch for orphan tags below. |
 | `PORTAINER_READ_ONLY` | `0` | `1` restricts to `GET`/`HEAD` operations only (strict — HTTP method is the read/write classifier). |
 | `PORTAINER_NO_PROXY` | `0` | `1` skips `docker_proxy` / `kubernetes_proxy` registration. |
@@ -18,8 +18,9 @@ Unknown profile names will prevent the server from starting. Unknown extras (tag
 | Profile | Tags | Use case |
 |---|---|---|
 | `BASE` | `auth`, `system`, `status`, `settings`, `motd` | Server identity, login, settings. Effectively required — most workflows assume these are present. |
-| `DOCKER` | `docker`, `endpoints`, `stacks` | Docker workloads on Portainer-managed environments. |
-| `KUBERNETES` | `kubernetes`, `helm`, `endpoints`, `stacks` | Kubernetes workloads, including Helm releases. Shares `endpoints`/`stacks` with `DOCKER` — union'd, no duplication. |
+| `DOCKER` | `docker`, `endpoints`, `stacks`, `gitops` | Docker workloads on Portainer-managed environments. |
+| `KUBERNETES` | `kubernetes`, `helm`, `endpoints`, `stacks`, `gitops` | Kubernetes workloads, including Helm releases. Shares `endpoints`/`stacks`/`gitops` with `DOCKER` — union'd, no duplication. |
+| `GITOPS` | `gitops` | GitOps source management (register/list/test git sources, browse refs). Since Portainer 2.43 a registered source is required to deploy a git-backed stack, so `gitops` also rides along inside `DOCKER`/`KUBERNETES`; this standalone profile is for source-management-only personas. |
 | `EDGE` | `edge`, `edge_stacks`, `edge_jobs`, `edge_groups`, `edge_update_schedules`, `edge_configs` | Portainer Edge fleet management. |
 | `ADMIN` | `users`, `teams`, `team_memberships`, `roles`, `ldap`, `license`, `backup`, `registries`, `endpoint_groups`, `policies`, `resource_controls`, `tags` | Platform administration: identity, registries, backups, RBAC. |
 
@@ -39,26 +40,27 @@ when you need them, or switch to `ALL`:
 
 | Count | Tag | Notes |
 |---:|---|---|
-| 15 | `observability` | Container/pod logs, metrics, stats. |
-| 12 | `omni` | Talos Kubernetes cluster management. |
+| 18 | `observability` | Container/pod logs, metrics, stats. |
+| 13 | `omni` | Talos Kubernetes cluster management. |
+| 11 | `cloud_credentials` | Cloud provider credentials. |
 | 10 | `custom_templates` | User-defined app templates. |
-| 9 | `gitops` | GitOps configuration surface. |
-| 8 | `cloud_credentials` | Cloud provider credentials. |
 | 6 | `webhooks` | Webhook management. |
-| 4 | `kaas` | Kubernetes-as-a-Service provisioning. |
+| 5 | `addons` | Cluster addon management (new in Portainer 2.44). |
 | 4 | `useractivity` | Audit log. |
 | 3 | `support` | Support bundles / diagnostics. |
+| 2 | `allowlist` | URL allow list. |
 | 2 | `recommendations` | Recommendation engine. |
 | 2 | `ssl` | Server TLS certificates. |
 | 2 | `templates` | App template library. |
 | 1 | `auto_updates` | Auto-update configuration. |
+| 1 | `kaas` | Kubernetes-as-a-Service provisioning. |
 | 1 | `upload` | File upload endpoint. |
 
 ## Examples
 
 ```bash
-# Default — Docker + Kubernetes workloads
-PORTAINER_PROFILES=BASE,DOCKER,KUBERNETES uv run portainer-mcp
+# Default — Docker + Kubernetes workloads, incl. GitOps source management
+PORTAINER_PROFILES=BASE,DOCKER,KUBERNETES,GITOPS uv run portainer-mcp
 
 # Edge-only fleet operator
 PORTAINER_PROFILES=BASE,EDGE uv run portainer-mcp
@@ -70,7 +72,7 @@ PORTAINER_PROFILES=ALL PORTAINER_READ_ONLY=1 uv run portainer-mcp
 PORTAINER_PROFILES=BASE,DOCKER PORTAINER_NO_PROXY=1 uv run portainer-mcp
 
 # Default + observability for a troubleshooting workflow
-PORTAINER_PROFILES=BASE,DOCKER,KUBERNETES PORTAINER_TAGS_EXTRA=observability \
+PORTAINER_PROFILES=BASE,DOCKER,KUBERNETES,GITOPS PORTAINER_TAGS_EXTRA=observability \
   uv run portainer-mcp
 ```
 
