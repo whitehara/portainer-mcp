@@ -10,7 +10,13 @@ import pytest
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
-from portainer_mcp.swarm import _infer_access_type, _strip_docker_frames, register
+from portainer_mcp.swarm import (
+    _infer_access_type,
+    _merge_env,
+    _scrub,
+    _strip_docker_frames,
+    register,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -74,18 +80,35 @@ def test_strip_docker_frames_empty():
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_client(routes: dict[str, object]) -> httpx.AsyncClient:
-    """Build an AsyncClient backed by a dict of path → response."""
+def _make_mock_client(
+    routes: dict[str, object], captured: list[httpx.Request] | None = None
+) -> httpx.AsyncClient:
+    """Build an AsyncClient backed by a dict of path → response.
+
+    Route keys may be prefixed with an HTTP method and a space (e.g.
+    "GET /stacks/10") to give GET/PUT on the same path different canned
+    responses; unprefixed keys match any method, as most existing routes
+    do. Pass `captured` to record every request the client makes, so a
+    test can assert on the body a PUT actually sent.
+    """
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if captured is not None:
+            captured.append(request)
         path = request.url.path
         # Strip the leading /api prefix that the real client's base_url adds.
         key = path.removeprefix("/api")
         # Check params too for services?status=true
         full = key + ("?" + str(request.url.params) if request.url.params else "")
-        body = routes.get(full) or routes.get(key)
-        if body is None:
+        method = request.method
+        for candidate in (f"{method} {full}", f"{method} {key}", full, key):
+            if candidate in routes:
+                body = routes[candidate]
+                break
+        else:
             return httpx.Response(404, json={"message": f"not found: {key}"})
+        if isinstance(body, httpx.Response):
+            return body
         if isinstance(body, (dict, list)):
             return httpx.Response(200, json=body)
         return httpx.Response(200, content=body)
@@ -278,25 +301,249 @@ async def test_create_swarm_stack_read_only():
         )
 
 
+# ---------------------------------------------------------------------------
+# updateSwarmStack — env diff-merge
+# ---------------------------------------------------------------------------
+
+_STACK_10_ENV = [
+    {"name": "A", "value": "s3cr3t-alpha"},
+    {"name": "B", "value": "s3cr3t-bravo"},
+]
+_STACK_10_COMPOSE = "version: '3'\nservices:\n  web:\n    image: nginx:1.24\n"
+
+
+def _stack_routes(**overrides) -> dict[str, object]:
+    stack = {
+        "Id": 10,
+        "Name": "mystack",
+        "Type": 1,
+        "GitConfig": None,
+        "Env": _STACK_10_ENV,
+    }
+    stack.update(overrides)
+    # The mock PUT response doesn't echo the request body (it's a static
+    # fixture, not a real server), so it omits "Env" to force
+    # update_swarm_stack's fallback path — reporting env_names from the
+    # merged env it computed and sent, not from a stale canned response.
+    put_response = {k: v for k, v in stack.items() if k != "Env"}
+    return {
+        "GET /stacks/10": stack,
+        "PUT /stacks/10": put_response,
+        "GET /stacks/10/file": {"StackFileContent": _STACK_10_COMPOSE},
+        "GET /stacks/12": {
+            "Id": 12,
+            "Name": "gitstack",
+            "Type": 1,
+            "GitConfig": {"URL": "https://example.invalid/repo.git"},
+            "Env": [],
+        },
+        "PUT /stacks/12": {"Id": 12, "Name": "gitstack", "Env": []},
+        "GET /stacks/13": {"Id": 13, "Name": "k8sstack", "Type": 3, "Env": None},
+    }
+
+
+def _put_body(captured: list[httpx.Request], path: str = "/api/stacks/10") -> dict:
+    for req in captured:
+        if req.method == "PUT" and req.url.path == path:
+            return json.loads(req.content)
+    raise AssertionError(f"no PUT to {path} captured")
+
+
 @pytest.mark.asyncio
-async def test_update_swarm_stack():
+async def test_merge_env_preserves_when_omitted():
     mcp = FastMCP(name="test")
-    client = _make_mock_client(
-        {
-            "/stacks/10": {"Id": 10, "Name": "mystack"},
-        }
+    captured: list[httpx.Request] = []
+    client = _make_mock_client(_stack_routes(), captured=captured)
+    register(mcp, client, read_only=False)
+    result = await mcp.call_tool(
+        "updateSwarmStack", {"stack_id": 10, "environment_id": 1}
     )
+    data = json.loads(result.content[0].text)
+    assert data["updated"] is True
+    assert set(data["env_names"]) == {"A", "B"}
+    body = _put_body(captured)
+    assert body["env"] == _STACK_10_ENV
+    assert body["stackFileContent"] == _STACK_10_COMPOSE
+
+
+@pytest.mark.asyncio
+async def test_merge_env_set_upsert():
+    mcp = FastMCP(name="test")
+    captured: list[httpx.Request] = []
+    client = _make_mock_client(_stack_routes(), captured=captured)
     register(mcp, client, read_only=False)
     result = await mcp.call_tool(
         "updateSwarmStack",
         {
             "stack_id": 10,
             "environment_id": 1,
-            "compose_file": "version: '3'\nservices:\n  web:\n    image: nginx:1.25\n",
+            "env_set": {"A": "s3cr3t-alpha-2", "C": "s3cr3t-charlie"},
         },
     )
     data = json.loads(result.content[0].text)
-    assert data["updated"] is True
+    assert set(data["env_names"]) == {"A", "B", "C"}
+    body = _put_body(captured)
+    by_name = {p["name"]: p["value"] for p in body["env"]}
+    assert by_name == {
+        "A": "s3cr3t-alpha-2",
+        "B": "s3cr3t-bravo",
+        "C": "s3cr3t-charlie",
+    }
+
+
+@pytest.mark.asyncio
+async def test_merge_env_unset():
+    mcp = FastMCP(name="test")
+    captured: list[httpx.Request] = []
+    client = _make_mock_client(_stack_routes(), captured=captured)
+    register(mcp, client, read_only=False)
+    result = await mcp.call_tool(
+        "updateSwarmStack",
+        {"stack_id": 10, "environment_id": 1, "env_unset": ["A", "nope"]},
+    )
+    data = json.loads(result.content[0].text)
+    assert data["env_names"] == ["B"]
+    assert data["env_removed"] == ["A"]
+    body = _put_body(captured)
+    assert body["env"] == [{"name": "B", "value": "s3cr3t-bravo"}]
+
+
+@pytest.mark.asyncio
+async def test_merge_env_replace_empty_wipes():
+    mcp = FastMCP(name="test")
+    captured: list[httpx.Request] = []
+    client = _make_mock_client(_stack_routes(), captured=captured)
+    register(mcp, client, read_only=False)
+    result = await mcp.call_tool(
+        "updateSwarmStack",
+        {"stack_id": 10, "environment_id": 1, "env_replace": []},
+    )
+    data = json.loads(result.content[0].text)
+    assert data["env_names"] == []
+    body = _put_body(captured)
+    assert body["env"] == []
+
+
+@pytest.mark.asyncio
+async def test_merge_env_replace_conflicts_with_set():
+    mcp = FastMCP(name="test")
+    client = _make_mock_client(_stack_routes())
+    register(mcp, client, read_only=False)
+    with pytest.raises(ToolError, match="env_replace"):
+        await mcp.call_tool(
+            "updateSwarmStack",
+            {
+                "stack_id": 10,
+                "environment_id": 1,
+                "env_replace": [],
+                "env_set": {"A": "x"},
+            },
+        )
+
+
+def test_merge_env_dedupes_duplicate_names():
+    current = [
+        {"name": "A", "value": "first"},
+        {"name": "A", "value": "second"},
+    ]
+    merged, summary = _merge_env(current, None, None)
+    assert merged == [{"name": "A", "value": "second"}]
+    assert summary["deduped"] == ["A"]
+
+
+def test_merge_env_accepts_capitalized_pair_keys():
+    current = [{"Name": "A", "Value": "v1"}]
+    merged, summary = _merge_env(current, {"B": "v2"}, None)
+    assert merged == [{"name": "A", "value": "v1"}, {"name": "B", "value": "v2"}]
+    assert summary["added"] == ["B"]
+
+
+@pytest.mark.asyncio
+async def test_update_keeps_compose_file_when_omitted():
+    mcp = FastMCP(name="test")
+    captured: list[httpx.Request] = []
+    client = _make_mock_client(_stack_routes(), captured=captured)
+    register(mcp, client, read_only=False)
+    await mcp.call_tool("updateSwarmStack", {"stack_id": 10, "environment_id": 1})
+    body = _put_body(captured)
+    assert body["stackFileContent"] == _STACK_10_COMPOSE
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_git_backed_stack():
+    mcp = FastMCP(name="test")
+    client = _make_mock_client(_stack_routes())
+    register(mcp, client, read_only=False)
+    with pytest.raises(ToolError, match="[Gg]it"):
+        await mcp.call_tool(
+            "updateSwarmStack",
+            {
+                "stack_id": 12,
+                "environment_id": 1,
+                "compose_file": "version: '3'",
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_kubernetes_stack():
+    mcp = FastMCP(name="test")
+    client = _make_mock_client(_stack_routes())
+    register(mcp, client, read_only=False)
+    with pytest.raises(ToolError, match="Swarm"):
+        await mcp.call_tool(
+            "updateSwarmStack",
+            {
+                "stack_id": 13,
+                "environment_id": 1,
+                "compose_file": "version: '3'",
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_response_contains_no_env_values():
+    mcp = FastMCP(name="test")
+    client = _make_mock_client(_stack_routes())
+    register(mcp, client, read_only=False)
+    result = await mcp.call_tool(
+        "updateSwarmStack", {"stack_id": 10, "environment_id": 1}
+    )
+    text = result.content[0].text
+    assert "s3cr3t-alpha" not in text
+    assert "s3cr3t-bravo" not in text
+
+
+@pytest.mark.asyncio
+async def test_error_body_scrubbed():
+    mcp = FastMCP(name="test")
+    routes = _stack_routes()
+    routes["PUT /stacks/10"] = httpx.Response(
+        400,
+        json={"message": "invalid payload", "env": _STACK_10_ENV},
+    )
+    client = _make_mock_client(routes)
+    register(mcp, client, read_only=False)
+    with pytest.raises(ToolError) as exc_info:
+        await mcp.call_tool(
+            "updateSwarmStack", {"stack_id": 10, "environment_id": 1}
+        )
+    assert "s3cr3t-alpha" not in str(exc_info.value)
+    assert "s3cr3t-bravo" not in str(exc_info.value)
+
+
+def test_error_body_scrub_across_500_char_boundary():
+    secret = "s3cr3t-boundary-value-0123456789"
+    padding = "x" * 490
+    text = padding + secret + "y" * 50  # secret straddles the 500-char cutoff
+    scrubbed = _scrub(text, {secret})
+    assert secret not in scrubbed
+    assert "[REDACTED]" in scrubbed
+    # If truncation ran before scrubbing, only a prefix of `secret` would
+    # have survived into the 500-char text and wouldn't match for
+    # replacement — assert no such orphaned prefix leaks through.
+    for cut in range(4, len(secret)):
+        assert secret[:cut] not in scrubbed
 
 
 @pytest.mark.asyncio

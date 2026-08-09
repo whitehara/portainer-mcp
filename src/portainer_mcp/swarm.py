@@ -27,6 +27,90 @@ def _infer_access_type(url: str) -> str:
     return "remote"
 
 
+def _merge_env(
+    current: list[dict],
+    set_: dict[str, str] | None,
+    unset: list[str] | None,
+) -> tuple[list[dict], dict]:
+    """Merge an env diff onto Portainer's current Env pairs.
+
+    Duplicate names in `current` collapse to one entry, keeping the value
+    from the last occurrence — Portainer allows duplicate names in a
+    stack's Env array, and silently dropping the later one would change
+    semantics no caller asked for.
+    """
+    set_ = set_ or {}
+    unset_names = list(dict.fromkeys(unset or []))
+
+    order: list[str] = []
+    values: dict[str, str] = {}
+    deduped: list[str] = []
+    for pair in current:
+        name = pair.get("name", pair.get("Name", ""))
+        value = pair.get("value", pair.get("Value", ""))
+        if value is None:
+            value = ""
+        if name in values:
+            if name not in deduped:
+                deduped.append(name)
+        else:
+            order.append(name)
+        values[name] = str(value)
+
+    original_names = set(order)
+
+    added: list[str] = []
+    updated: list[str] = []
+    for name, value in set_.items():
+        if name in values:
+            if values[name] != value:
+                updated.append(name)
+        else:
+            order.append(name)
+            added.append(name)
+        values[name] = value
+
+    removed: list[str] = []
+    not_found: list[str] = []
+    for name in unset_names:
+        if name in values:
+            del values[name]
+            order.remove(name)
+            removed.append(name)
+        else:
+            not_found.append(name)
+
+    merged = [{"name": name, "value": values[name]} for name in order]
+    summary = {
+        "added": added,
+        "updated": updated,
+        "removed": removed,
+        "unchangedCount": len(original_names - set(updated) - set(removed)),
+        "notFound": not_found,
+        "deduped": deduped,
+    }
+    return merged, summary
+
+
+def _scrub(text: str, secret_values: set[str]) -> str:
+    """Redact known secret values from an upstream error body before truncating.
+
+    `update_swarm_stack` sends env values the caller never saw (they're
+    merged server-side), so an upstream error that echoes the request
+    payload could otherwise leak them — unlike other tools' error paths,
+    where the payload is always the caller's own. Values are scrubbed
+    longest-first so a short value can't leave part of a longer one
+    unredacted, and scrubbing runs *before* truncation so a secret split
+    across the 500-char boundary can't survive intact.
+    """
+    scrubbed = text
+    for value in sorted(
+        {v for v in secret_values if v and len(v) >= 4}, key=len, reverse=True
+    ):
+        scrubbed = scrubbed.replace(value, "[REDACTED]")
+    return scrubbed[:500]
+
+
 def _strip_docker_frames(data: bytes) -> str:
     """Strip Docker log-multiplexing 8-byte frame headers.
 
@@ -422,8 +506,21 @@ def register(mcp: FastMCP, client: httpx.AsyncClient, *, read_only: bool) -> Non
         name="updateSwarmStack",
         annotations=rw_annotations,
         description=(
-            "Update an existing Docker Swarm stack's Compose file and/or environment variables. "
-            "All current environment variables must be included — omitting one removes it."
+            "Update an existing Docker Swarm stack's Compose file and/or "
+            "environment variables — env changes are a diff, not a full "
+            "replacement. Variables you don't mention are preserved; call "
+            "StackInspect first to see current variable names (values come "
+            "back as [REDACTED], but names are visible). Use env_set to "
+            "add/overwrite specific variables, env_unset to remove specific "
+            "variables by name, or env_replace to discard everything and set "
+            "an exact new list (env_replace=[] wipes all env vars — cannot "
+            "combine env_replace with env_set/env_unset). Omit compose_file "
+            "to keep the current one. Variable values are never returned — "
+            "only names. Git-linked stacks are rejected by default because "
+            "Portainer's update endpoint silently clears the stack's "
+            "AutoUpdate setting; pass allow_git_stack=True only if losing "
+            "that setting (not restored automatically) is acceptable — "
+            "otherwise use StackUpdateGit / StackGitRedeploy instead."
         ),
     )
     async def update_swarm_stack(
@@ -433,14 +530,37 @@ def register(mcp: FastMCP, client: httpx.AsyncClient, *, read_only: bool) -> Non
             Field(description="Portainer environment ID where the stack runs"),
         ],
         compose_file: Annotated[
-            str, Field(description="New Docker Compose file content (YAML string)")
-        ],
-        env: Annotated[
-            list[dict] | None,
+            str | None,
             Field(
-                description='Environment variables as [{name: "KEY", value: "VAL"}] (optional)'
+                description="New Docker Compose file content (YAML string). "
+                "Omit to keep the stack's current file."
             ),
         ] = None,
+        env_set: Annotated[
+            dict[str, str] | None,
+            Field(description="Env vars to add or overwrite, as {NAME: value}"),
+        ] = None,
+        env_unset: Annotated[
+            list[str] | None,
+            Field(description="Names of env vars to remove"),
+        ] = None,
+        env_replace: Annotated[
+            list[dict] | None,
+            Field(
+                description="Discard all current env vars and replace with "
+                'exactly this list, as [{"name": "KEY", "value": "VAL"}]. '
+                "Use [] to wipe all env vars. Cannot combine with "
+                "env_set/env_unset."
+            ),
+        ] = None,
+        allow_git_stack: Annotated[
+            bool,
+            Field(
+                description="Allow updating a Git-linked stack, accepting "
+                "that Portainer clears its AutoUpdate setting (not restored "
+                "automatically)"
+            ),
+        ] = False,
         pull_image: Annotated[
             bool,
             Field(description="Pull latest images before deploying (default false)"),
@@ -455,9 +575,72 @@ def register(mcp: FastMCP, client: httpx.AsyncClient, *, read_only: bool) -> Non
         if read_only:
             raise ToolError("updateSwarmStack is not allowed in read-only mode")
 
+        if env_replace is not None and (env_set or env_unset):
+            raise ToolError(
+                "env_replace cannot be combined with env_set/env_unset — "
+                "env_replace discards the current env list entirely"
+            )
+
+        stack_resp = await client.get(f"/stacks/{stack_id}")
+        if stack_resp.is_error:
+            raise ToolError(
+                f"failed to read stack {stack_id} (HTTP {stack_resp.status_code}): "
+                f"{_scrub(stack_resp.text, set())}"
+            )
+        stack = stack_resp.json()
+
+        if stack.get("Type") != _STACK_TYPE_SWARM:
+            raise ToolError(
+                "updateSwarmStack only supports Docker Swarm stacks "
+                f"(stack {stack_id} has Type={stack.get('Type')}); "
+                "Kubernetes stacks don't carry Env the same way — use the "
+                "Kubernetes stack tools instead"
+            )
+
+        if stack.get("GitConfig") and not allow_git_stack:
+            raise ToolError(
+                f"stack {stack_id} is Git-linked; PUT /stacks/{{id}} clears "
+                "its AutoUpdate setting, which is not restored automatically. "
+                "Use StackUpdateGit / StackGitRedeploy instead, or pass "
+                "allow_git_stack=True to proceed anyway and accept losing "
+                "AutoUpdate"
+            )
+
+        current_env = stack.get("Env") or []
+        secret_values = {
+            str(p.get("value", p.get("Value", ""))) for p in current_env
+        } | set((env_set or {}).values())
+
+        removed_names: list[str] = []
+        if env_replace is not None:
+            merged_env = [
+                {
+                    "name": p.get("name", p.get("Name", "")),
+                    "value": p.get("value", p.get("Value", "")),
+                }
+                for p in env_replace
+            ]
+        else:
+            merged_env, summary = _merge_env(current_env, env_set, env_unset)
+            removed_names = summary["removed"]
+
+        if compose_file is None:
+            file_resp = await client.get(f"/stacks/{stack_id}/file")
+            if file_resp.is_error:
+                raise ToolError(
+                    f"failed to read current Compose file for stack {stack_id} "
+                    f"(HTTP {file_resp.status_code}): "
+                    f"{_scrub(file_resp.text, secret_values)}"
+                )
+            compose_file = (file_resp.json() or {}).get("StackFileContent")
+            if not compose_file:
+                raise ToolError(
+                    f"stack {stack_id} has no current Compose file content to preserve"
+                )
+
         body: dict = {
             "stackFileContent": compose_file,
-            "env": env or [],
+            "env": merged_env,
             "prune": prune,
             "pullImage": pull_image,
         }
@@ -468,8 +651,29 @@ def register(mcp: FastMCP, client: httpx.AsyncClient, *, read_only: bool) -> Non
         )
         if resp.is_error:
             raise ToolError(
-                f"failed to update swarm stack (HTTP {resp.status_code}): {resp.text[:500]}"
+                f"failed to update swarm stack (HTTP {resp.status_code}): "
+                f"{_scrub(resp.text, secret_values)}"
             )
-        return json.dumps({"id": stack_id, "updated": True})
+
+        try:
+            response_json = resp.json()
+        except ValueError:
+            response_json = None
+
+        response_env = response_json.get("Env") if response_json is not None else None
+        if response_env is not None:
+            env_names = [p.get("name", p.get("Name", "")) for p in response_env]
+        else:
+            env_names = [p["name"] for p in merged_env]
+
+        result: dict = {
+            "id": stack_id,
+            "updated": True,
+            "env_names": env_names,
+            "env_removed": removed_names,
+        }
+        if allow_git_stack and stack.get("GitConfig"):
+            result["auto_update_cleared"] = True
+        return json.dumps(result)
 
     logger.info("swarm tools registered (read_only=%s)", read_only)
