@@ -145,3 +145,36 @@ env 2個）を`createSwarmStack`で作成し、以下を実機（Portainer CE 2.
 再度追加して再デプロイする。envdiff-1〜2bの`updateSwarmStack`拡張自体は
 後方互換（`env_set`/`env_unset`/`env_replace`/`dry_run`はすべて新規追加の
 オプション引数）なのでコード面の切り戻しは不要。
+
+### 追加検証: 本番portainer-mcp経由での実機テスト（2026-08-10）
+
+上記手順4〜6の検証は「ローカルの新コード→実際のPortainer API」という経路で
+行っており、「本番デプロイされたportainer-mcpインスタンス自身（`mcp-auth-proxy`
+経由）を通した`updateSwarmStack`呼び出し」は未検証だった。ユーザー指摘を受け、
+`mcp-portal`（claude.ai既存接続）経由で追加検証を実施。
+
+- `portal_toggle_single_server`でuntoggle→toggleしたがツールスキーマが
+  古いまま（`env`必須の旧シグネチャ）だったため、`mcp-portal`自体の再認証
+  （`/mcp`コマンド、ユーザー実施）が必要だった。再認証後、
+  `updateSwarmStack`のスキーマに`dry_run`/`env_set`/`env_unset`/
+  `env_replace`/`allow_git_stack`が反映されていることを確認
+- 実在の本番スタック`tmux_mcp_stack`（id=24、environment_id=1、影響の
+  少ないスタックとしてユーザーが選定、GitConfig=null）に対して実施:
+  - `StackInspect`で既存8変数を確認（全て`[REDACTED]`）
+  - `env_set={"ENVDIFF_PROD_TEST": "hello-envdiff-verification"}`を
+    `dry_run=True`で実行→`env_added:["ENVDIFF_PROD_TEST"]`,
+    `env_unchanged_count:8`。`dry_run=False`で実行→**dry_run結果と完全一致**
+  - `StackInspect`で9変数（既存8＋新規1）全てが`[REDACTED]`で返ることを確認
+  - **ユーザーがPortainer GUIで`ENVDIFF_PROD_TEST`の値が
+    `hello-envdiff-verification`に正しく設定されていることを確認**
+    （MCPからは値が見えないが実際には正しい値が入っている＝redactionが
+    正しく機能していることの直接証拠）
+  - `env_unset=["ENVDIFF_PROD_TEST"]`を`dry_run=True`→
+    `env_removed:["ENVDIFF_PROD_TEST"]`, `env_unchanged_count:8`。
+    `dry_run=False`で実行→dry_run結果と完全一致
+  - `StackInspect`で元の8変数のみに戻ったことを確認
+  - `listSwarmServices`で`tmux-mcp`・`mcp-auth-proxy`ともに
+    `replicas.desired == replicas.running == 1`、異常なし
+
+本番のportainer-mcp自身を経由した経路でも、env保持・追加・削除・dry_run一致・
+値の非開示のすべてが実証された。
