@@ -30,9 +30,11 @@ upstreamの同名タグと衝突している（別コミットを指す）。
 
 詳細は `.claude/phases/phase-0-tag-cleanup.md` 以下、各フェーズごとのファイルを参照。
 
-## プロジェクト2: スタックenv差分更新ツール（envdiff、2026-08-09開始）
+## プロジェクト2: スタックenv差分更新ツール（envdiff、2026-08-09開始、2026-08-10完了）
 
-upstream追従計画（フェーズ0〜6）完了後に着手した別プロジェクト。
+upstream追従計画（フェーズ0〜6）完了後に着手した別プロジェクト。全フェーズ
+（1・2・2b・3・4）完了。本番`portainer-mcp`は`PORTAINER_EXPOSE_ENV_VALUES=1`を
+撤去しredaction既定に戻した状態で稼働中（`hl-2.44.0-2`）。
 
 ### 背景
 
@@ -52,7 +54,7 @@ APIが`Env`配列を全置換方式で受け取る仕様（researcherが`portain
 | envdiff-2 | `[REDACTED]`書き戻しガード＋hygieneガイド追記 | 完了（2026-08-10、reviewer PASS） |
 | envdiff-2b | `updateSwarmStack`のdry_runプレビュー機能 | 完了（2026-08-10、reviewer PASS） |
 | envdiff-3 | ドキュメント整合とfork delta棚卸し | 完了（2026-08-10） |
-| envdiff-4 | 実機検証と本番`PORTAINER_EXPOSE_ENV_VALUES`撤去 | 未着手 |
+| envdiff-4 | 実機検証と本番`PORTAINER_EXPOSE_ENV_VALUES`撤去 | 完了（2026-08-10） |
 
 詳細は`.claude/phases/envdiff-phase-1-read-modify-write.md`以下、各フェーズごとの
 ファイルを参照。

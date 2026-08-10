@@ -33,14 +33,17 @@
 
 ## 運用ノート（コード外の判断だが記録しておく）
 
-- **【envdiff-4完了時に書き換え予定】** 本番の`portainer-mcp`サービスには
-  `PORTAINER_EXPOSE_ENV_VALUES=1`を設定している（upstream既定は無効=redacted）。
-  理由: Portainerの`StackUpdate` APIは`Env`配列を全置換方式で受け取るため、
-  portainer-mcp経由で*他の*スタックを差分更新する際、既存env値が読めないと
-  安全に更新できないため。これに対応する`updateSwarmStack`のread-modify-write化
-  （env差分マージ・`[REDACTED]`書き戻しガード・dry_runプレビュー）は
-  envdiff-1〜2bで実装済み。envdiff-4（実機検証＋本番設定撤去）が完了したら、
-  この項を「redaction既定に戻した（日付・理由・代替手段）」に書き換える。
+- **redaction既定に戻した（2026-08-10、envdiff-4完了）**。以前は本番の
+  `portainer-mcp`サービスに`PORTAINER_EXPOSE_ENV_VALUES=1`を設定していた
+  （理由: Portainerの`StackUpdate` APIが`Env`配列を全置換方式で受け取るため、
+  portainer-mcp経由で他スタックを差分更新する際に既存env値が読めないと
+  安全に更新できなかったため）。代替手段として`updateSwarmStack`を
+  read-modify-write化（env差分マージ・`[REDACTED]`書き戻しガード・
+  dry_runプレビュー、envdiff-1〜2b）したことで、この設定が不要になった。
+  本番サービスから`PORTAINER_EXPOSE_ENV_VALUES`の行を削除し、`docker_proxy`で
+  サービスspecのEnv値がすべて`[REDACTED]`で返ることとredactionサマリ行の
+  付与を確認済み（詳細は`.claude/phases/envdiff-phase-4-verify-deploy.md`）。
+  切り戻す場合はイメージタグを`hl-2.44.0-1`相当に戻し、この設定を再度付与する。
 - 本番の認証構成: `PORTAINER_MCP_TRUST_PROXY_TLS=1` + `PORTAINER_MCP_FORWARDED_ALLOW_IPS`
   + `PORTAINER_MCP_TRUST_PROXY_AUTH=1`（`server.py`へのパッチ無し、env変数のみ）。
   mcp-auth-proxy側（このリポジトリ外、`/tmp/portainer-agent-stack.yml`）で
