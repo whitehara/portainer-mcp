@@ -43,7 +43,25 @@
 
 ## 完了条件
 
-- [ ] `git diff --stat upstream/main..HEAD`の各行が`.claude/FORK-DELTA.md`の
+- [x] `git diff --stat upstream/main..HEAD`の各行が`.claude/FORK-DELTA.md`の
       差分表に1対1で存在する（`.claude/**`配下を除く）
-- [ ] `.claude/ROADMAP.md`のenvdiffフェーズ一覧が実態に即して更新されている
-- [ ] `.gitignore`が`.claude/FORK-DELTA.md`の表に記載されている
+- [x] `.claude/ROADMAP.md`のenvdiffフェーズ一覧が実態に即して更新されている
+- [x] `.gitignore`が`.claude/FORK-DELTA.md`の表に記載されている
+
+## 実施結果（2026-08-10）
+
+メインセッションで実施（コード変更なし）。
+
+- `CLAUDE.md`のArchitecture節「Swarm tools are hand-written in `swarm.py`」段落に
+  `updateSwarmStack`のread-modify-write化（env差分マージ・値非公開・sentinelガード）
+  と`dry_run`（read-onlyモードでも許可される旨含む）を追記
+- `.claude/FORK-DELTA.md`の差分表を更新: `swarm.py`行に envdiff-1〜2b の内容を追記、
+  `proxy.py`/`skills/portainer-mcp-hygiene/SKILL.md`/`tests/test_proxy.py`の3行を
+  新規追加、`CLAUDE.md`行の記述を実態（複数箇所への追記）に合わせて修正、
+  `.gitignore`行を新規追加、運用ノートの`PORTAINER_EXPOSE_ENV_VALUES=1`項に
+  envdiff-4完了時の書き換え予定を明記
+- `git diff --stat upstream/main -- . ':!.claude'`で列挙される15ファイルすべてが
+  `.claude/FORK-DELTA.md`の差分表にbacktick付きパスとして1対1で存在することを
+  機械的に突合して確認済み（当初`tests/test_proxy.py`の記載漏れを検出し追加）
+- `.claude/ROADMAP.md`のenvdiff-1〜3のステータスを実態に更新
+- `docs/configuration.md`はupstreamファイルのため変更なし（プランどおり）

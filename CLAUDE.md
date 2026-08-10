@@ -56,7 +56,21 @@ Key things to internalise before changing code:
   Env variable values are intentionally excluded from service responses.
   `_strip_docker_frames()` strips Docker's 8-byte log multiplexing headers
   from container log responses (TTY-attached containers emit raw bytes and
-  are handled by a fallback).
+  are handled by a fallback). **`updateSwarmStack` is read-modify-write, not
+  a passthrough PUT.** Portainer's `PUT /stacks/{id}` replaces the `Env`
+  array wholesale — omitting a variable deletes it — so the tool reads the
+  stack's current `Env` first and merges the caller's `env_set`/`env_unset`/
+  `env_replace` diff server-side (`_merge_env`/`_replace_summary` in
+  `swarm.py`); env *values* are never included in the tool's own output,
+  only names (`_scrub()` also redacts known values out of any upstream
+  error body). A `redaction.SENTINEL` guard rejects merged values that are
+  literally `[REDACTED]`, so a caller can't round-trip a redacted read back
+  into a write and clobber the real secret. `dry_run=True` runs every read
+  and check but skips the PUT, returning which variable names would change
+  and whether the Compose file would change — never values — so an agent
+  can preview a change before committing to it; this is the one case where
+  `updateSwarmStack` is allowed under `PORTAINER_READ_ONLY=1` (every other
+  write path stays blocked).
 - **`select` is universal.** `SelectArgTransform` (`shaping.py`) wraps
   every tool with an optional JMESPath `select` parameter, including all
   hand-written tools (`proxy.py`, `swarm.py`); their absence of a
