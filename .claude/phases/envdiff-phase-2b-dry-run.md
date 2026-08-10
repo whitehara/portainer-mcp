@@ -240,3 +240,16 @@ reviewer再レビューでPASS（Blocker/Should 0件）。Nice指摘2件（`env_
 `secret_values`が`env_replace`由来の新値を含まない既存動作、compose比較GETが
 辞書以外を返した場合の`AttributeError`未捕捉）はいずれも本フェーズ以前からの
 既存動作・極めて起こりにくいケースであり対応不要と判断（reviewerの判断どおり）。
+
+### 追記修正: description文言の矛盾解消（2026-08-10、ユーザー指摘）
+
+`updateSwarmStack`のdescriptionにあった「Variables you don't mention are
+preserved; call StackInspect first to see current variable names」という
+文言が、命令形の「call StackInspect first」により、あたかもenv保存の前提
+条件としてStackInspect呼び出しが必須であるかのように読めてしまっていた
+（実際にはStackInspectを呼ばなくても未言及の変数は自動的に保持される。
+本番でのswarm-operatorスキル検証テストでも実証済み）。「preserved
+automatically — you don't need to call StackInspect first. StackInspect is
+only useful if you want to see current variable names before deciding what
+to change」に書き換え、任意の確認手段であることを明確化した。
+`uv run pytest -q`336件全PASS、ruffに新規指摘なし。

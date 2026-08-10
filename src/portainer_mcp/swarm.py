@@ -559,8 +559,10 @@ def register(mcp: FastMCP, client: httpx.AsyncClient, *, read_only: bool) -> Non
         description=(
             "Update an existing Docker Swarm stack's Compose file and/or "
             "environment variables — env changes are a diff, not a full "
-            "replacement. Variables you don't mention are preserved; call "
-            "StackInspect first to see current variable names (values come "
+            "replacement. Variables you don't mention are preserved "
+            "automatically — you don't need to call StackInspect first. "
+            "StackInspect is only useful if you want to see current "
+            "variable names before deciding what to change (values come "
             "back as [REDACTED], but names are visible). Use env_set to "
             "add/overwrite specific variables, env_unset to remove specific "
             "variables by name, or env_replace to discard everything and set "
