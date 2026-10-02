@@ -41,7 +41,7 @@ Each operation becomes an MCP tool.
 
 ### Tag filter — `profiles.py`
 
-The spec exposes ~380 operations across 40+ tags — too noisy for a model
+The spec exposes 400+ operations across 40+ tags — too noisy for a model
 to navigate. Profiles are named bundles of tags (e.g. `DOCKER`,
 `KUBERNETES`). `PORTAINER_PROFILES` selects which to enable; the union
 of their tags becomes a `RouteMap` per tag (FastMCP intersects multi-tag
@@ -55,7 +55,11 @@ arbitrary paths under `/endpoints/{id}/docker/...` and
 `/endpoints/{id}/kubernetes/...`. These paths aren't enumerated in the
 OpenAPI spec (Portainer forwards them as a subpath to the underlying
 daemon), so they can't be generated. Each tool validates the path (no
-`..`, no `?#`) and blocks auth-bypass headers.
+`..`, no `?#`) and blocks auth-bypass headers. The `body` argument accepts a
+JSON object (serialized server-side) or a raw string (forwarded verbatim); a
+string that is itself JSON-encoded JSON is rejected as a double-encode, and
+`Content-Type` defaults to `application/json` when a body is sent without
+one, because Docker refuses a body with no media type.
 
 ### Tool annotations — `readOnlyHint`
 

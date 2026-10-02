@@ -277,14 +277,17 @@ endpoint is strong end-to-end evidence; a health check alone is necessary, not
 sufficient. The response is whatever the app returns — often non-JSON, so
 `select` may not apply (see *Non-JSON endpoints*).
 
-**A mutation call with no body fields can be rejected with `400 … EOF`.** If
-every body field of a write tool is optional and you supply none, the server
-receives *no request body at all*, and some Portainer handlers refuse to decode
-that — the signature is `Invalid request payload` with details `EOF`. The
-canonical case is `StackGitRedeploy`, where a bare redeploy ("pull the
-configured ref and re-apply") conceptually needs no arguments: pass one
-harmless body field to make the request well-formed, e.g. `Prune: false`.
-Read that error as "send at least one body field", not as a broken tool.
+**A bare `StackGitRedeploy` is a valid call — and `endpointId` is required.**
+"Pull the configured ref and re-apply" needs no body fields: omitted fields
+keep the stack's stored ref, env and Git credentials, and the server sends an
+empty JSON object on your behalf (Portainer rejects a *missing* body with
+`400 … EOF`, so there is no need for a decoy field such as `Prune: false`).
+What *is* mandatory is the `endpointId` argument, on `StackGitRedeploy`,
+`StackUpdateGit` and `StackMigrate` alike. Upstream documents it as an optional
+fallback for pre-1.18 stacks, but the handler applies a missing value as
+environment 0, so every call without it fails with `Object not found inside
+the database (bucket=endpoints, key=0)` whatever the stack's age. Read it off
+`StackInspect` or `StackList` (`EndpointId`).
 
 **`StackUpdateGit` changes the Git *settings*, not the running deployment —
 and its response looks like it already redeployed.** Repointing a ref or
@@ -325,6 +328,17 @@ kubernetes_proxy(environment_id=N, method="PATCH",
 ```
 
 Scale to `0`, confirm the pod is gone, then back to the target count. For any workload that must not run two copies at once — anything writing to a single shared volume, such as a game server, a database, or any app with non-shared backing storage — this scale-to-zero-then-up cycle is the *only* safe restart. Never raise replicas above one to "roll" such a workload: two pods writing the same volume can corrupt it.
+
+**JSON bodies on the proxy tools — send the object, don't stringify twice.**
+`docker_proxy` and `kubernetes_proxy` accept `body` as a JSON object directly
+(serialized server-side) or as a raw string forwarded verbatim. When a body is
+sent without a `Content-Type`, the server adds `application/json` — Docker
+otherwise rejects it with `malformed Content-Type header (): mime: no media
+type`. Set `headers` only when the media type is *not* JSON, as in the
+merge-patch example above. If a call fails with `cannot unmarshal string into
+Go value`, the payload was encoded twice (a JSON string containing JSON); the
+server now rejects that shape up front with an `encoded twice` error — resend
+the object itself.
 
 ## Tool selection cheatsheet
 
@@ -374,4 +388,4 @@ contradicts an explicit claim in this file, is reportable.
 
 ---
 
-Skill version: 2.44.0 (matches the `mcp-portainer` release tag this file shipped with).
+Skill version: 2.45.1 (matches the `mcp-portainer` release tag this file shipped with).

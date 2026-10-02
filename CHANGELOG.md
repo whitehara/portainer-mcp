@@ -9,6 +9,119 @@ the MCP server.
 
 ## [Unreleased]
 
+## [2.45.1] — 2026-09-02
+
+Targets Portainer 2.45.x.
+
+### Changed
+
+- **cryptography bumped 48.0.1 → 50.0.0** (Dependabot, #96). Direct
+  production dependency; no behaviour change on our side.
+
+### Fixed
+
+- **`endpointId` is now a required argument on `StackGitRedeploy`,
+  `StackUpdateGit` and `StackMigrate`.** Upstream documents it as an
+  optional fallback for stacks created before Portainer 1.18, but the
+  handlers apply a missing value as environment 0, so every call without it
+  failed with `Object not found inside the database (bucket=endpoints,
+  key=0)` regardless of the stack's age. The patched spec marks it required
+  so the argument is enforced at the tool boundary. (#106)
+- **Write tools with all-optional body fields send `{}` instead of no
+  body.** FastMCP sends no request body when the model supplies no body
+  fields, and Portainer rejects that with `400 Invalid request payload:
+  EOF`, so a bare `StackGitRedeploy` ("pull and re-apply as configured")
+  could never succeed without a decoy field. Routes that declare an
+  `application/json` body now go out as an empty object, and the hygiene
+  guide's `Prune: false` workaround is gone. (#106)
+- **Proxy tools accept a JSON object `body` and default `Content-Type` to
+  `application/json`.** `docker_proxy` / `kubernetes_proxy` declared `body`
+  as string-only, so a model sending the payload as an object was rejected
+  and typically retried by stringifying it again — which Docker then refused
+  with `cannot unmarshal string into Go value`. A body sent without a
+  `Content-Type` was also refused by Docker (`malformed Content-Type header
+  (): mime: no media type`), so any JSON POST needed an explicit header to
+  work at all. Objects and arrays are now serialized server-side, strings are
+  still forwarded verbatim, an explicit `Content-Type` is always preserved,
+  and a body that is a JSON string containing JSON (encoded twice) is
+  rejected at the tool boundary with an `encoded twice` hint instead of
+  reaching the daemon. (#105)
+- **Container healthcheck follows `PORTAINER_MCP_HTTP_PORT` and
+  `PORTAINER_MCP_HTTP_HOST`** — the image always probed `127.0.0.1:17717`, so
+  overriding the port marked a healthy server unhealthy, and under
+  `--network host` could report whatever else sat on 17717 as healthy. The
+  probe now resolves both variables with the server's own fallback semantics
+  (an empty value behaves like an unset one), and maps a wildcard bind to its
+  loopback. (#98; approach from #99 by @paulcakeface)
+
+## [2.45.0] — 2026-08-27
+
+Targets Portainer 2.45.x.
+
+### Changed
+
+- **Embedded spec bumped to Portainer EE 2.45.0** (was 2.44.0). Total
+  operations 428 → 466. `kubernetes` grows 95 → 119 — the largest delta by
+  far, and the only one landing in the default profile; the orphan tags
+  `addons` (5 → 17) and `omni` (13 → 14) account for most of the rest.
+  Default `BASE,DOCKER,KUBERNETES,GITOPS` coverage moves 211 → 236 and the
+  six-profile union 350 → 375. Upstream added and removed no tags this
+  minor, so [`docs/profiles.md`](docs/profiles.md)'s orphan table needed
+  only the two recounts. Re-audited every spec-defect mitigation against
+  the new spec: all six (the `UpdateKubernetesNamespaceDeprecated`
+  exclusion, the `edge_agent` tag drop, the `/websocket` path drop, the
+  `policies.PolicyType` and `images.Status` duplicate-enum strips, and the
+  `portaineree.ConditionOperator` bare-`=` value-tag workaround) are still
+  load-bearing and unchanged — none of the underlying upstream defects were
+  fixed in 2.45.
+
+- **Re-audited the spec-defect mitigations against upstream 2.44.0** — a step
+  the 2.44.0 release skipped. (This landed mid-cycle, before the spec bump
+  above; its operation counts refer to 2.44.0.) Upstream fixes its defects
+  silently, so nothing failed when the workarounds went stale. Two of the three
+  `EXCLUDED_OPERATION_IDS` entries (`providerInfo`, `provisionCluster`) were
+  dead code: their quoted-enum defect was fixed in 2.43 and the operations
+  were deleted outright in 2.44. `UpdateKubernetesNamespaceDeprecated` had its
+  structural defect (a required `namespace` path param absent from its own
+  template) fixed in 2.43 too, so it stays excluded as a deliberate policy
+  call — it's upstream's superseded twin of `UpdateKubernetesNamespace` — and
+  the comment now says so. `ENUM_STRIPS` loses a nested-trail walk that only
+  ever traversed one level. Still load-bearing on 2.44 and unchanged: the
+  `tag:yaml.org,2002:value` constructor (`portaineree.ConditionOperator` ships
+  a bare `=`; a pristine `SafeLoader` raises on it), the `policies.PolicyType`
+  enum strip, and the `/websocket` + `edge_agent` drops. Verified by
+  regenerating the spec: byte-identical output, so no tool-surface change.
+
+### Fixed
+
+- **`images.Status` duplicate enum stripped** for consistency with
+  `policies.PolicyType` — the same upstream swaggo defect (the varname list is
+  emitted twice, leaving 12 values with 6 duplicated). It reaches only the
+  output schemas of `ServiceImageStatus`, `containerImageStatus` and
+  `stackImagesStatus`, so the effect is cosmetic; it left the then-current
+  operation count unchanged at 428.
+- **`PolicyCreate` and `PolicyConflicts` were completely broken** — their
+  request-body schemas (`policies.policyCreatePayload`,
+  `policies.policyConflictsPayload`) are undocumented upstream (a bare
+  `{"type": "object"}` with no properties), so FastMCP had nothing to
+  flatten and fell back to a single opaque `body` parameter — then
+  serialized the call *wrapped* under that parameter's own name
+  (`{"body": {...}}`) instead of using it as the literal request body.
+  Portainer never saw the real fields, so every call failed with a generic
+  400 regardless of what was supplied. Fixed by injecting the real property
+  shapes (confirmed by hand against a live server) into both schemas —
+  `PolicyCreate` mirrors `PolicyUpdate`'s fields, `PolicyConflicts` uses
+  the server's actual lowercase JSON tags (`policyId`, `type`,
+  `environmentGroups`) rather than the capitalised names that happen to
+  decode anyway. Both `Type`/`type` enums are read from
+  `policies.PolicyType`'s own enum at patch time rather than hand-copied,
+  so they can't silently drift out of sync with the real catalog the way
+  `PolicyUpdate`'s own local enum already has (missing `cleanup-docker`,
+  `network-security-k8s`, `pod-security-standards-k8s` — upstream's
+  pre-existing omission, not fixed here). `PolicyUpdate` itself was never
+  affected by the original defect — its schema already declared real
+  properties.
+
 ## [2.44.0] — 2026-07-30
 
 Targets Portainer 2.44.x.
