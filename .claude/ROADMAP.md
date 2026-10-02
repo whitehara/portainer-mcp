@@ -104,3 +104,9 @@ upstream追従の検知はCI駆動の自動化（GitHub Actions + Issue起票）
 `.claude/skills/upstream-sync/SKILL.md`の手順（`git fetch upstream`→差分確認→
 `git merge-tree`での事前コンフリクト予測→…）に従って対応する。フォーク独自差分の
 一覧は`.claude/FORK-DELTA.md`を参照。
+
+## 追従履歴
+
+| 日付 | upstream | fork タグ | 詳細 |
+|---|---|---|---|
+| 2026-10-02 | 2.45.1 | `hl-2.45.1-1` | `.claude/phases/sync-2026-10-02-upstream-2.45.1.md`（デプロイ済み、`getSwarmServiceLogs`404が未切り分け） |
