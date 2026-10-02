@@ -250,6 +250,69 @@ async def test_get_swarm_service_logs(mcp_with_swarm):
     assert result.content[0].text == "log line\n"
 
 
+def _logs_routes(**extra: object) -> dict[str, object]:
+    routes: dict[str, object] = {
+        "/endpoints/1/docker/tasks": [
+            {
+                "NodeID": "node1",
+                "Status": {
+                    "State": "running",
+                    "ContainerStatus": {"ContainerID": "ctr1"},
+                },
+            }
+        ],
+        "/endpoints/1/docker/nodes/node1": {"Description": {"Hostname": "worker-a"}},
+        "/endpoints/1/docker/containers/ctr1/logs": _make_frame(1, b"log line\n"),
+    }
+    routes.update(extra)
+    return routes
+
+
+@pytest.mark.asyncio
+async def test_get_swarm_service_logs_targets_task_node():
+    captured: list[httpx.Request] = []
+    mcp = FastMCP(name="test")
+    register(mcp, _make_mock_client(_logs_routes(), captured), read_only=False)
+    result = await mcp.call_tool(
+        "getSwarmServiceLogs", {"environment_id": 1, "service_name": "s_web"}
+    )
+    assert result.content[0].text == "log line\n"
+    logs_req = next(r for r in captured if r.url.path.endswith("/logs"))
+    assert logs_req.headers["X-PortainerAgent-Target"] == "worker-a"
+
+
+@pytest.mark.asyncio
+async def test_get_swarm_service_logs_node_lookup_failure_omits_header():
+    captured: list[httpx.Request] = []
+    routes = _logs_routes()
+    del routes["/endpoints/1/docker/nodes/node1"]
+    mcp = FastMCP(name="test")
+    register(mcp, _make_mock_client(routes, captured), read_only=False)
+    result = await mcp.call_tool(
+        "getSwarmServiceLogs", {"environment_id": 1, "service_name": "s_web"}
+    )
+    assert result.content[0].text == "log line\n"
+    logs_req = next(r for r in captured if r.url.path.endswith("/logs"))
+    assert "X-PortainerAgent-Target" not in logs_req.headers
+
+
+@pytest.mark.asyncio
+async def test_get_swarm_service_logs_404_names_the_node():
+    routes = _logs_routes(
+        **{
+            "/endpoints/1/docker/containers/ctr1/logs": httpx.Response(
+                404, json={"message": "No such container"}
+            )
+        }
+    )
+    mcp = FastMCP(name="test")
+    register(mcp, _make_mock_client(routes), read_only=False)
+    with pytest.raises(ToolError, match="worker-a"):
+        await mcp.call_tool(
+            "getSwarmServiceLogs", {"environment_id": 1, "service_name": "s_web"}
+        )
+
+
 @pytest.mark.asyncio
 async def test_get_swarm_service_logs_no_running_task():
     mcp = FastMCP(name="test")

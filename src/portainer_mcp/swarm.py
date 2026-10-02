@@ -476,16 +476,34 @@ def register(mcp: FastMCP, client: httpx.AsyncClient, *, read_only: bool) -> Non
             )
 
         container_id = ""
+        node_id = ""
         for task in tasks_resp.json():
             status = task.get("Status") or {}
             if status.get("State") == "running":
                 cs = status.get("ContainerStatus") or {}
                 if cs.get("ContainerID"):
                     container_id = cs["ContainerID"]
+                    node_id = task.get("NodeID", "")
                     break
 
         if not container_id:
             return f"no running task found for service: {service_name}"
+
+        # A Portainer agent environment fans requests out to the node named in
+        # this header; without it a container on a non-manager node 404s. A
+        # failed hostname lookup just omits the header (the old behaviour).
+        headers: dict[str, str] = {}
+        hostname = ""
+        if node_id:
+            node_resp = await client.get(
+                f"/endpoints/{environment_id}/docker/nodes/{node_id}"
+            )
+            if not node_resp.is_error:
+                hostname = (node_resp.json().get("Description") or {}).get(
+                    "Hostname", ""
+                )
+                if hostname:
+                    headers["X-PortainerAgent-Target"] = hostname
 
         logs_resp = await client.get(
             f"/endpoints/{environment_id}/docker/containers/{container_id}/logs",
@@ -495,10 +513,19 @@ def register(mcp: FastMCP, client: httpx.AsyncClient, *, read_only: bool) -> Non
                 "follow": "false",
                 "tail": str(tail),
             },
+            headers=headers,
         )
         if logs_resp.is_error:
+            hint = ""
+            if logs_resp.status_code == 404 and hostname:
+                hint = (
+                    f" (the task runs on node {hostname!r}; if this is a "
+                    "docker-socket environment it only reaches the manager "
+                    "node's containers — use an agent environment)"
+                )
             raise ToolError(
-                f"failed to fetch container logs (HTTP {logs_resp.status_code}): {logs_resp.text[:500]}"
+                f"failed to fetch container logs (HTTP {logs_resp.status_code}): "
+                f"{logs_resp.text[:500]}{hint}"
             )
         return _strip_docker_frames(logs_resp.content)
 

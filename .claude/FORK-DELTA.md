@@ -14,7 +14,7 @@
 
 | ファイル | 変更内容 | 存在理由 | upstreamで代替されたら削除できる条件 | 最終確認日 |
 |---|---|---|---|---|
-| `src/portainer_mcp/swarm.py` | 新規ファイル（8ツール: `listSwarmEnvironments`, `listSwarmNodes`, `listSwarmServices`, `listSwarmTasks`, `getSwarmInfo`, `getSwarmServiceLogs`, `createSwarmStack`, `updateSwarmStack`）。`updateSwarmStack`はread-modify-write化済み（envdiff-1〜2b）: `env_set`/`env_unset`/`env_replace`のサーバ側diffマージ、`[REDACTED]`書き戻しガード、`dry_run`プレビューモード | Docker Swarm運用（ホームラボの主要デプロイ先）向けの独自ツール群。upstreamはDocker Swarm特化のハンドライトツールを持たない | upstreamが同等のSwarmツール群を取り込んだら削除・置き換え検討 | 2026-08-10 |
+| `src/portainer_mcp/swarm.py` | 新規ファイル（8ツール: `listSwarmEnvironments`, `listSwarmNodes`, `listSwarmServices`, `listSwarmTasks`, `getSwarmInfo`, `getSwarmServiceLogs`, `createSwarmStack`, `updateSwarmStack`）。`updateSwarmStack`はread-modify-write化済み（envdiff-1〜2b）: `env_set`/`env_unset`/`env_replace`のサーバ側diffマージ、`[REDACTED]`書き戻しガード、`dry_run`プレビューモード。`getSwarmServiceLogs`はタスクのノードをagent環境の`X-PortainerAgent-Target`ヘッダーで指定（workerノードのコンテナログ取得、2026-10-02） | Docker Swarm運用（ホームラボの主要デプロイ先）向けの独自ツール群。upstreamはDocker Swarm特化のハンドライトツールを持たない | upstreamが同等のSwarmツール群を取り込んだら削除・置き換え検討 | 2026-08-10 |
 | `tests/test_swarm.py` | 新規ファイル（`swarm.py`のテスト） | 上記の対 | `swarm.py`削除に連動 | 2026-08-10 |
 | `src/portainer_mcp/proxy.py` | `_call()`内、書き込み系リクエストのボディに`redaction.SENTINEL`（`[REDACTED]`）が含まれる場合に`ToolError`で拒否するガードを追加（15行差分。2.45.1マージで上流の`_coerce_body`/Content-Type既定付与と共存、`_call`内でsentinelガードを先に置く） | LLMが読み取った`[REDACTED]`を実値として書き戻し、本物の秘密情報を上書きしてしまう事故を防ぐため（envdiff-2） | upstream PRがマージされたら削除 | 2026-10-02 |
 | `skills/portainer-mcp-hygiene/SKILL.md` | 「Env values are redacted by default」節に、`[REDACTED]`を書き戻さないための運用ガイドを1段落追記 | 上記ガードと対になる事前回避ガイド（envdiff-2） | upstream PRがマージされたら削除 | 2026-08-10 |
