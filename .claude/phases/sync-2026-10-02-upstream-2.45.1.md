@@ -34,7 +34,11 @@
 
 ## 未解決・要追跡
 
-- `getSwarmServiceLogs`が環境5・1の両方でHTTP 404（`No such container`）。デプロイ直後のportainer-mcpサービスで確認。
-  `swarm.py`は今回のマージで差分なし。タスクが別ノードにあることが原因の可能性があるが未切り分け
+- ~~`getSwarmServiceLogs`が404~~ → 原因切り分け済み（docker-socket環境はmanagerノードのコンテナしか見えず、agent環境でもノード指定ヘッダー未送信だった）。`fix/swarm-logs-agent-target`で修正（agent環境では`X-PortainerAgent-Target`を付与、socket環境のworkerタスクは404にノード名ヒントを付与）
 - 実コンテナでのHEALTHCHECK動作は未確認（サービスは1/1稼働）
 - 変更を伴う動作（空ボディの`StackGitRedeploy`、proxyのdictボディ）は本番で未実行
+
+## ログ取得修正のreviewer指摘（Nice）
+
+- 404ヒント文言の断定 → 「if this is a docker-socket environment」へ条件付きに修正済み
+- socket環境でのヘッダー常時送信は未検証（拒否されても404ヒントで気づける）。`node_resp.json()`の非JSON応答は未対応（YAGNI、実機で問題が出たら対応）
